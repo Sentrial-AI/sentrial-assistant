@@ -14,6 +14,12 @@ __pycache__/
 *.sqlite
 *.sqlite-journal
 
+# OAuth client_secret JSONs downloaded from Google Cloud Console — never commit.
+# Use the env vars (GOOGLE_CLIENT_ID / _SECRET) on Railway + Keychain locally.
+client_secret_*.json
+client_secret*.json
+*oauth*client*.json
+
 # Session artifacts
 /data/
 /deliverables/
