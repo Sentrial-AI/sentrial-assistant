@@ -531,17 +531,25 @@ def run():
             Expected payloads:
               { type: "voice_reply", text: "Sentrial's reply text" }
               { type: "voice_exit" }
+              { type: "console", level, text }   (injected console forwarder)
             """
             try:
                 body = message.body()
-                if isinstance(body, dict):
-                    kind = str(body.get("type", ""))
-                    text = str(body.get("text", ""))
-                else:
-                    return
             except Exception as e:  # noqa: BLE001
-                log.debug("bad script message: %s", e)
+                log.warning("script message: body() failed: %s", e)
                 return
+            # Log any inbound message at INFO level while we're still debugging
+            # the console bridge — this proves whether messages reach us at all.
+            log.info("script msg: pytype=%s body=%r", type(body).__name__, body if not isinstance(body, (bytes, bytearray)) else f"<{len(body)} bytes>")
+            if not isinstance(body, dict):
+                # NSDictionary may bridge to dict, or not, depending on PyObjC.
+                # Try to coerce via mapping protocol.
+                try:
+                    body = dict(body)
+                except Exception:  # noqa: BLE001
+                    return
+            kind = str(body.get("type", ""))
+            text = str(body.get("text", ""))
 
             if kind == "console":
                 level = str(body.get("level", "log"))
