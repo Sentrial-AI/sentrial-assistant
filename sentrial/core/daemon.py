@@ -81,6 +81,10 @@ async def _main(host: str | None, port: int | None) -> None:
     evolution_server.register(registry, task_runner)
     log.info("loaded: evolution MCP (self-improvement loop)")
 
+    from sentrial.mcps.scheduling import server as scheduling_server
+    scheduling_server.register(registry, task_runner)
+    log.info("loaded: scheduling MCP (plan_day + cross-platform reminders)")
+
     # notify_user — Sentrial's outbound voice
     async def _notify_user_tool(args: dict) -> dict:
         msg = str(args.get("message", ""))
@@ -128,6 +132,10 @@ async def _main(host: str | None, port: int | None) -> None:
         webhook_input.serve(host=host, port=port, task_runner=task_runner, agent=agent, registry=registry)
     )
 
+    # Start the cross-platform reminder sweeper (delivers web push on due).
+    from sentrial.core import reminders as _rem
+    reminder_task = asyncio.create_task(_rem.run_sweeper_forever(), name="reminder_sweeper")
+
     # Signal handling
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -140,11 +148,13 @@ async def _main(host: str | None, port: int | None) -> None:
     log.info("sentrial up")
     await stop.wait()
     log.info("shutting down")
-    server_task.cancel()
-    try:
-        await server_task
-    except asyncio.CancelledError:
-        pass
+    for t in (server_task, reminder_task):
+        t.cancel()
+    for t in (server_task, reminder_task):
+        try:
+            await t
+        except asyncio.CancelledError:
+            pass
 
 
 @app.command()
