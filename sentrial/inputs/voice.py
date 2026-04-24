@@ -38,6 +38,43 @@ def _ensure_ssl_certs() -> None:
     os.environ["SSL_CERT_FILE"] = bundle
     os.environ.setdefault("REQUESTS_CA_BUNDLE", bundle)
 
+def _find_mic_helper() -> str | None:
+    """
+    Locate the Swift mic helper binary bundled alongside our interpreter.
+
+    Priority:
+      1. $SENTRIAL_MIC_HELPER (explicit override for dev)
+      2. <Sentrial.app>/Contents/MacOS/sentrial-mic — where build_py2app.sh
+         drops it inside the py2app bundle.
+      3. <repo>/Sentrial.app/Contents/MacOS/sentrial-mic — when running
+         in-repo without py2app.
+    Returns None if no candidate exists.
+    """
+    import os
+    import sys
+    env = os.environ.get("SENTRIAL_MIC_HELPER")
+    if env and os.path.exists(env):
+        return env
+    # sys.executable for a py2app app is Sentrial.app/Contents/MacOS/python,
+    # so its sibling MacOS/sentrial-mic is the bundled helper.
+    exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+    candidate = os.path.join(exe_dir, "sentrial-mic")
+    if os.path.exists(candidate):
+        return candidate
+    # Walk up looking for a Sentrial.app — covers the in-repo dev case where
+    # Python is the venv interpreter and Sentrial.app sits next to it.
+    cur = os.path.abspath(os.path.dirname(sys.executable))
+    for _ in range(6):
+        maybe = os.path.join(cur, "Sentrial.app", "Contents", "MacOS", "sentrial-mic")
+        if os.path.exists(maybe):
+            return maybe
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            break
+        cur = parent
+    return None
+
+
 SAMPLE_RATE = 16000
 CHANNELS = 1
 DTYPE = "int16"
@@ -100,11 +137,12 @@ class VoiceSession:
 
         import os as _os
         import subprocess as _sp
-        helper = _os.environ.get("SENTRIAL_MIC_HELPER")
+        import sys as _sys
+        helper = _os.environ.get("SENTRIAL_MIC_HELPER") or _find_mic_helper()
         if not helper or not _os.path.exists(helper):
-            log.warning("SENTRIAL_MIC_HELPER missing: %r", helper)
+            log.warning("sentrial-mic helper missing: %r", helper)
             self._on_error(
-                "Mic helper missing — rebuild Sentrial.app: ./scripts/build_app.sh"
+                "Mic helper missing — rebuild Sentrial.app: ./scripts/build_py2app.sh"
             )
             return
 

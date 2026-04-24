@@ -30,7 +30,7 @@ python -m sentrial.core.daemon setup
 # entrypoint in a Sentrial.app bundle whose Info.plist carries the required
 # usage descriptions, and point launchd at that.
 echo "-> Building Sentrial.app bundle"
-"$here/scripts/build_app.sh"
+"$here/scripts/build_py2app.sh"
 
 # --- 4. Log dirs -----------------------------------------------------------
 logs="$HOME/Library/Logs/Sentrial"

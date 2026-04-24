@@ -68,26 +68,16 @@ def run():
 
     _ensure_ssl_certs()
 
-    # Diagnostic: log which Python is running and whether voice deps import.
-    # If Sentrial launched via launchd but deepgram is missing, the logs make it obvious.
+    # Diagnostic: log which Python is running and locate the Swift mic helper.
     log.info("menubar python: %s", sys.executable)
-    try:
-        import deepgram as _dg  # noqa: F401
-        log.info("deepgram-sdk: OK")
-    except Exception as e:  # noqa: BLE001
+    from sentrial.inputs.voice import _find_mic_helper
+    helper = _find_mic_helper()
+    if helper:
+        log.info("sentrial-mic helper: %s", helper)
+    else:
         log.warning(
-            "deepgram-sdk NOT importable (%s). In this venv run:\n"
-            "  %s -m pip install deepgram-sdk sounddevice",
-            e, sys.executable,
-        )
-    try:
-        import sounddevice as _sd  # noqa: F401
-        log.info("sounddevice: OK")
-    except Exception as e:  # noqa: BLE001
-        log.warning(
-            "sounddevice NOT importable (%s). Usually fixed by:\n"
-            "  brew install portaudio && %s -m pip install sounddevice",
-            e, sys.executable,
+            "sentrial-mic helper not found — rebuild Sentrial.app: "
+            "./scripts/build_py2app.sh"
         )
 
     # Imports inside run() so the module can still be imported on Linux.
