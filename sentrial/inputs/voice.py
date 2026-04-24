@@ -10,6 +10,10 @@ speaks; the final transcript accumulates as each utterance is finalized.
 
 Fails gracefully if DEEPGRAM_API_KEY is missing, if deepgram-sdk or sounddevice
 aren't installed, or if mic permission is denied.
+
+Compatible with deepgram-sdk ≥ 6.x (Fern-generated). The v6 API replaced
+LiveOptions/LiveTranscriptionEvents with a context-manager-based WebSocket client
+accessible via dg.listen.v1.connect(**kwargs).
 """
 from __future__ import annotations
 
@@ -67,11 +71,8 @@ class VoiceSession:
 
     def _run(self) -> None:
         try:
-            from deepgram import (
-                DeepgramClient,
-                LiveOptions,
-                LiveTranscriptionEvents,
-            )
+            from deepgram import DeepgramClient
+            from deepgram.listen.v1.types.listen_v1results import ListenV1Results
         except ImportError as e:
             log.warning("deepgram-sdk not installed: %s", e)
             self._on_error(
@@ -88,36 +89,10 @@ class VoiceSession:
             )
             return
 
-        connection = None
         try:
-            dg = DeepgramClient(self.api_key)
-            connection = dg.listen.websocket.v("1")
+            dg = DeepgramClient(api_key=self.api_key)
 
-            def on_message(_client, result, **_kw):
-                try:
-                    alt = result.channel.alternatives[0]
-                    sentence = (alt.transcript or "").strip()
-                except (AttributeError, IndexError):
-                    return
-                if not sentence:
-                    return
-                # Continuous mode: fire on_final per-utterance, not accumulated.
-                # speech_final is stricter (endpointing-triggered) than is_final.
-                if getattr(result, "speech_final", False) or getattr(result, "is_final", False):
-                    self._final_text = sentence
-                    self._on_final(sentence)
-                else:
-                    self._on_interim(sentence)
-
-            def on_err(_client, error, **_kw):
-                msg = str(error)[:300]
-                log.warning("deepgram error: %s", msg)
-                self._on_error(msg)
-
-            connection.on(LiveTranscriptionEvents.Transcript, on_message)
-            connection.on(LiveTranscriptionEvents.Error, on_err)
-
-            opts = LiveOptions(
+            with dg.listen.v1.connect(
                 model=self.model,
                 language=self.language,
                 encoding="linear16",
@@ -127,36 +102,66 @@ class VoiceSession:
                 punctuate=True,
                 smart_format=True,
                 endpointing=300,
-            )
-            if not connection.start(opts):
-                self._on_error("deepgram failed to start")
-                return
+            ) as ws:
+                # Receive messages in a background thread (ws iterator blocks).
+                recv_done = threading.Event()
 
-            def audio_cb(indata, _frames, _time, status):
-                if status:
-                    log.debug("mic status: %s", status)
-                if self._stop.is_set():
-                    raise sd.CallbackStop
+                def recv_loop() -> None:
+                    try:
+                        for msg in ws:
+                            if isinstance(msg, ListenV1Results):
+                                try:
+                                    alt = msg.channel.alternatives[0]
+                                    sentence = (alt.transcript or "").strip()
+                                except (AttributeError, IndexError):
+                                    continue
+                                if not sentence:
+                                    continue
+                                # speech_final is endpointing-triggered (stricter);
+                                # fall back to is_final for interim-result accumulation.
+                                if msg.speech_final or msg.is_final:
+                                    self._final_text = sentence
+                                    self._on_final(sentence)
+                                else:
+                                    self._on_interim(sentence)
+                    except Exception as recv_err:  # noqa: BLE001
+                        if not self._stop.is_set():
+                            log.warning("deepgram recv error: %s", recv_err)
+                    finally:
+                        recv_done.set()
+
+                recv_thread = threading.Thread(target=recv_loop, daemon=True)
+                recv_thread.start()
+
+                def audio_cb(indata, _frames, _time, status) -> None:
+                    if status:
+                        log.debug("mic status: %s", status)
+                    if self._stop.is_set():
+                        raise sd.CallbackStop
+                    try:
+                        ws.send_media(bytes(indata))
+                    except Exception as send_err:  # noqa: BLE001
+                        log.warning("deepgram send failed: %s", send_err)
+
+                with sd.InputStream(
+                    samplerate=SAMPLE_RATE,
+                    channels=CHANNELS,
+                    dtype=DTYPE,
+                    blocksize=BLOCK_SIZE,
+                    callback=audio_cb,
+                ):
+                    while not self._stop.wait(0.05):
+                        pass
+
+                # Tell Deepgram we're done so it flushes remaining transcripts.
                 try:
-                    connection.send(bytes(indata))
-                except Exception as e:  # noqa: BLE001
-                    log.warning("deepgram send failed: %s", e)
-
-            with sd.InputStream(
-                samplerate=SAMPLE_RATE,
-                channels=CHANNELS,
-                dtype=DTYPE,
-                blocksize=BLOCK_SIZE,
-                callback=audio_cb,
-            ):
-                while not self._stop.wait(0.05):
+                    ws.send_close_stream()
+                except Exception:  # noqa: BLE001
                     pass
+
+                # Wait for the receiver to drain (up to 3s).
+                recv_done.wait(timeout=3.0)
+
         except Exception as e:  # noqa: BLE001
             log.exception("voice session error")
             self._on_error(str(e)[:300])
-        finally:
-            if connection is not None:
-                try:
-                    connection.finish()
-                except Exception:  # noqa: BLE001
-                    pass

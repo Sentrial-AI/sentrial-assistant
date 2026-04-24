@@ -747,108 +747,76 @@
   .voice-mode[hidden] { display: none; }
   @keyframes voice-mode-in { from { opacity: 0; } to { opacity: 1; } }
 
-  /* Animated grid background that reacts to state */
+  /* Animated grid background that reacts + reverses on speak */
   .voice-mode::before {
     content: '';
     position: absolute; inset: 0;
     background-image:
-      radial-gradient(circle at 50% 50%, transparent 0%, rgba(5,6,10,0.9) 75%),
+      radial-gradient(circle at 50% 50%, transparent 0%, rgba(5,6,10,0.92) 75%),
       repeating-linear-gradient(0deg, rgba(94,234,212,0.05) 0 1px, transparent 1px 40px),
       repeating-linear-gradient(90deg, rgba(94,234,212,0.05) 0 1px, transparent 1px 40px);
     transition: background-image 0.6s ease;
     pointer-events: none;
-    animation: grid-drift 18s linear infinite;
+    animation: grid-drift 16s linear infinite;
   }
   .voice-mode.state-speaking::before {
     background-image:
-      radial-gradient(circle at 50% 50%, transparent 0%, rgba(5,6,10,0.9) 75%),
-      repeating-linear-gradient(0deg, rgba(251,191,36,0.06) 0 1px, transparent 1px 40px),
-      repeating-linear-gradient(90deg, rgba(251,191,36,0.06) 0 1px, transparent 1px 40px);
+      radial-gradient(circle at 50% 50%, transparent 0%, rgba(5,6,10,0.92) 75%),
+      repeating-linear-gradient(0deg, rgba(251,146,60,0.07) 0 1px, transparent 1px 40px),
+      repeating-linear-gradient(90deg, rgba(251,146,60,0.07) 0 1px, transparent 1px 40px);
+    animation: grid-drift-reverse 10s linear infinite;
   }
   @keyframes grid-drift {
     from { background-position: 0 0, 0 0, 0 0; }
     to   { background-position: 0 0, 0 800px, 800px 0; }
   }
+  @keyframes grid-drift-reverse {
+    from { background-position: 0 0, 0 0, 0 0; }
+    to   { background-position: 0 0, 0 -800px, -800px 0; }
+  }
 
   .orb-wrap {
     position: relative;
-    width: 260px; height: 260px;
-    perspective: 900px;
+    width: 280px; height: 280px;
     z-index: 1;
   }
 
-  /* Wireframe globe */
-  .globe {
-    position: absolute; inset: 0;
-    transform-style: preserve-3d;
-    animation: globe-spin 16s linear infinite;
+  /* Node-web globe — rendered in SVG, rotated via JS requestAnimationFrame. */
+  .globe-svg {
+    width: 100%; height: 100%;
+    overflow: visible;
     transition: filter 0.6s ease;
-    filter: drop-shadow(0 0 24px rgba(94,234,212,0.45));
+    filter: drop-shadow(0 0 22px rgba(94,234,212,0.45));
   }
-  .voice-mode.state-speaking .globe {
-    filter: drop-shadow(0 0 26px rgba(251,191,36,0.5));
-    animation-duration: 6s;
+  .voice-mode.state-speaking .globe-svg {
+    filter: drop-shadow(0 0 26px rgba(251, 146, 60, 0.55));
   }
-  .voice-mode.state-thinking .globe {
-    filter: drop-shadow(0 0 14px rgba(100,116,139,0.35));
-    animation-duration: 28s;
+  .voice-mode.state-thinking .globe-svg {
+    filter: drop-shadow(0 0 10px rgba(100,116,139,0.3));
   }
-  .voice-mode.state-idle .globe { animation-duration: 22s; opacity: 0.8; }
-  @keyframes globe-spin {
-    from { transform: rotateX(22deg) rotateY(0deg); }
-    to   { transform: rotateX(22deg) rotateY(360deg); }
-  }
+  .voice-mode.state-idle .globe-svg { filter: drop-shadow(0 0 16px rgba(94,234,212,0.28)); }
 
-  .g-ring {
-    position: absolute; inset: 0;
-    border: 1px solid rgba(94, 234, 212, 0.55);
-    border-radius: 50%;
-    transition: border-color 0.6s ease;
-    box-sizing: border-box;
+  .edge-line {
+    stroke: rgba(94, 234, 212, 0.55);
+    stroke-width: 0.7;
+    fill: none;
+    transition: stroke 0.6s ease;
   }
-  .voice-mode.state-speaking .g-ring { border-color: rgba(251, 191, 36, 0.6); }
-  .voice-mode.state-thinking .g-ring { border-color: rgba(100, 116, 139, 0.45); }
+  .voice-mode.state-speaking .edge-line { stroke: rgba(251, 146, 60, 0.6); }
+  .voice-mode.state-thinking .edge-line { stroke: rgba(100, 116, 139, 0.35); }
 
-  /* Longitudes (vertical rings rotated around Y) */
-  .g-ring.lon0 { transform: rotateY(0deg); }
-  .g-ring.lon1 { transform: rotateY(30deg); }
-  .g-ring.lon2 { transform: rotateY(60deg); }
-  .g-ring.lon3 { transform: rotateY(90deg); }
-  .g-ring.lon4 { transform: rotateY(120deg); }
-  .g-ring.lon5 { transform: rotateY(150deg); }
-
-  /* Latitudes (horizontal rings, smaller at poles) */
-  .g-ring.lat0 { transform: rotateX(90deg); }
-  .g-ring.lat-n1 { transform: rotateX(90deg) translateZ(-55px); width: 78%; height: 78%; top: 11%; left: 11%; }
-  .g-ring.lat-n2 { transform: rotateX(90deg) translateZ(-100px); width: 45%; height: 45%; top: 27.5%; left: 27.5%; }
-  .g-ring.lat-p1 { transform: rotateX(90deg) translateZ(55px); width: 78%; height: 78%; top: 11%; left: 11%; }
-  .g-ring.lat-p2 { transform: rotateX(90deg) translateZ(100px); width: 45%; height: 45%; top: 27.5%; left: 27.5%; }
-
-  /* Node points on the surface — glowing dots that pulse */
-  .g-node {
-    position: absolute;
-    top: 50%; left: 50%;
-    width: 6px; height: 6px; border-radius: 50%;
-    margin: -3px 0 0 -3px;
-    background: #5eead4;
-    box-shadow: 0 0 10px #5eead4;
-    transition: background 0.6s ease, box-shadow 0.6s ease;
+  .node-circle {
+    fill: #5eead4;
+    transition: fill 0.6s ease;
   }
-  .voice-mode.state-speaking .g-node { background: #fbbf24; box-shadow: 0 0 10px #fbbf24; }
-  .voice-mode.state-thinking .g-node { background: #94a3b8; box-shadow: 0 0 6px #94a3b8; }
-  .g-node.p1 { transform: rotateY(0deg)   translateZ(130px); }
-  .g-node.p2 { transform: rotateY(72deg)  translateZ(130px); }
-  .g-node.p3 { transform: rotateY(144deg) translateZ(130px); }
-  .g-node.p4 { transform: rotateY(216deg) translateZ(130px); }
-  .g-node.p5 { transform: rotateY(288deg) translateZ(130px); }
-  .g-node.p6 { transform: rotateX(90deg)  translateZ(130px); }
-  .g-node.p7 { transform: rotateX(-90deg) translateZ(130px); }
+  .voice-mode.state-speaking .node-circle { fill: #fb923c; }
+  .voice-mode.state-thinking .node-circle { fill: #94a3b8; }
 
-  /* Audio reactivity — scale pulse layered over spin */
-  .voice-mode.state-listening .orb-wrap { animation: orb-breathe 2.4s ease-in-out infinite; }
-  .voice-mode.state-speaking  .orb-wrap { animation: orb-breathe-fast 1.1s ease-in-out infinite; }
-  @keyframes orb-breathe { 0%,100% { transform: scale(1); } 50% { transform: scale(1.06); } }
-  @keyframes orb-breathe-fast { 0%,100% { transform: scale(1); } 50% { transform: scale(1.1); } }
+  /* Overall breathe layered over node rotation */
+  .voice-mode.state-listening .orb-wrap { animation: orb-breathe 2.6s ease-in-out infinite; }
+  .voice-mode.state-speaking  .orb-wrap { animation: orb-breathe-fast 1.2s ease-in-out infinite; }
+  @keyframes orb-breathe { 0%,100% { transform: scale(1); } 50% { transform: scale(1.05); } }
+  @keyframes orb-breathe-fast { 0%,100% { transform: scale(1); } 50% { transform: scale(1.09); } }
 
   .voice-state-label {
     margin-top: 32px;
@@ -938,33 +906,17 @@
         </div>
       </div>
 
-      <!-- Voice Mode: wireframe globe overlay -->
+      <!-- Voice Mode: node-web globe overlay -->
       <div class="voice-mode state-idle" id="voice-mode" hidden>
         <div class="orb-wrap">
-          <div class="globe" id="voice-globe">
-            <div class="g-ring lon0"></div>
-            <div class="g-ring lon1"></div>
-            <div class="g-ring lon2"></div>
-            <div class="g-ring lon3"></div>
-            <div class="g-ring lon4"></div>
-            <div class="g-ring lon5"></div>
-            <div class="g-ring lat-n2"></div>
-            <div class="g-ring lat-n1"></div>
-            <div class="g-ring lat0"></div>
-            <div class="g-ring lat-p1"></div>
-            <div class="g-ring lat-p2"></div>
-            <div class="g-node p1"></div>
-            <div class="g-node p2"></div>
-            <div class="g-node p3"></div>
-            <div class="g-node p4"></div>
-            <div class="g-node p5"></div>
-            <div class="g-node p6"></div>
-            <div class="g-node p7"></div>
-          </div>
+          <svg class="globe-svg" id="voice-globe-svg" viewBox="-150 -150 300 300" aria-hidden="true">
+            <g class="edges" id="globe-edges"></g>
+            <g class="nodes" id="globe-nodes"></g>
+          </svg>
         </div>
         <div class="voice-state-label" id="voice-state-label">Ready</div>
         <div class="voice-transcript" id="voice-transcript"></div>
-        <div class="voice-hint" id="voice-hint">Tap Right-Option to speak</div>
+        <div class="voice-hint" id="voice-hint">Tap Right-Option to speak · tap again to exit</div>
       </div>
       <!-- History drawer overlay (inside chat view for proper mobile layering) -->
       <div class="history-drawer" id="history-drawer" hidden>
@@ -1496,7 +1448,7 @@ pushBtn.addEventListener('click', async () => {
   updatePushStatus();
 });
 
-// ================ Voice Mode (tap-to-toggle, continuous) ================
+// ================ Voice Mode (tap-to-toggle, continuous, interruptible) ================
 // Menubar calls sentrialVoiceStart / Update / Turn / Exit via evaluateJavaScript.
 // Mobile path uses webkitSpeechRecognition + SpeechSynthesis (same orb UI).
 (function installVoiceBridge() {
@@ -1508,22 +1460,146 @@ pushBtn.addEventListener('click', async () => {
   const micBtn = document.getElementById('input-mic');
 
   let active = false;
-  let turnInFlight = false;
-  let mobileRecog = null;       // SpeechRecognition instance (mobile path)
+  let turnSeq = 0;              // incremented per user utterance; supersedes in-flight replies
+  let currentState = 'idle';
+  let mobileRecog = null;
   let mobileMode = false;
+
+  // ---- Node-web globe ----
+  const NODES = 32;
+  const NEIGHBORS = 3;
+  const RADIUS = 110;
+  const NS = 'http://www.w3.org/2000/svg';
+  const edgesG = document.getElementById('globe-edges');
+  const nodesG = document.getElementById('globe-nodes');
+  let baseVerts = [];
+  let edgeIdx = [];
+  let edgeEls = [];
+  let nodeEls = [];
+  let rotY = 0;
+  let rotSpeed = 0.9;
+  let rafId = null;
+
+  function buildGlobe() {
+    if (!edgesG || !nodesG) return;
+    baseVerts = [];
+    const golden = Math.PI * (3 - Math.sqrt(5));
+    for (let i = 0; i < NODES; i++) {
+      const y = 1 - (i / (NODES - 1)) * 2;
+      const r = Math.sqrt(Math.max(0, 1 - y * y));
+      const theta = golden * i;
+      baseVerts.push([Math.cos(theta) * r, y, Math.sin(theta) * r]);
+    }
+    // k-nearest edges
+    const set = new Set();
+    for (let i = 0; i < NODES; i++) {
+      const ds = [];
+      for (let j = 0; j < NODES; j++) {
+        if (i === j) continue;
+        const dx = baseVerts[i][0]-baseVerts[j][0];
+        const dy = baseVerts[i][1]-baseVerts[j][1];
+        const dz = baseVerts[i][2]-baseVerts[j][2];
+        ds.push([dx*dx + dy*dy + dz*dz, j]);
+      }
+      ds.sort((a,b) => a[0]-b[0]);
+      for (let k = 0; k < NEIGHBORS; k++) {
+        const j = ds[k][1];
+        set.add(i < j ? (i + '-' + j) : (j + '-' + i));
+      }
+    }
+    edgeIdx = Array.from(set).map(s => s.split('-').map(Number));
+
+    edgesG.textContent = '';
+    nodesG.textContent = '';
+    edgeEls = edgeIdx.map(() => {
+      const l = document.createElementNS(NS, 'line');
+      l.setAttribute('class', 'edge-line');
+      edgesG.appendChild(l);
+      return l;
+    });
+    nodeEls = baseVerts.map(() => {
+      const c = document.createElementNS(NS, 'circle');
+      c.setAttribute('class', 'node-circle');
+      nodesG.appendChild(c);
+      return c;
+    });
+  }
+
+  function startGlobeLoop() {
+    if (rafId) return;
+    let last = performance.now();
+    const rotX = 0.28;
+    const cosX = Math.cos(rotX), sinX = Math.sin(rotX);
+    const frame = (t) => {
+      const dt = Math.min(80, t - last) / 16.67;
+      last = t;
+      rotY += 0.01 * rotSpeed * dt;
+      const cosY = Math.cos(rotY), sinY = Math.sin(rotY);
+      // Project
+      const proj = new Array(NODES);
+      for (let i = 0; i < NODES; i++) {
+        const v = baseVerts[i];
+        // X rotation
+        const ry = v[1] * cosX - v[2] * sinX;
+        const rz = v[1] * sinX + v[2] * cosX;
+        // Y rotation
+        const x = v[0] * cosY + rz * sinY;
+        const z = -v[0] * sinY + rz * cosY;
+        // Perspective
+        const f = 1.5 / (1.5 - z * 0.35);
+        proj[i] = [x * RADIUS * f, ry * RADIUS * f, z];
+      }
+      for (let i = 0; i < edgeIdx.length; i++) {
+        const [a, b] = edgeIdx[i];
+        const pa = proj[a], pb = proj[b];
+        const el = edgeEls[i];
+        el.setAttribute('x1', pa[0].toFixed(1));
+        el.setAttribute('y1', pa[1].toFixed(1));
+        el.setAttribute('x2', pb[0].toFixed(1));
+        el.setAttribute('y2', pb[1].toFixed(1));
+        const az = (pa[2] + pb[2]) * 0.5;
+        el.setAttribute('opacity', (0.18 + (az + 1) * 0.32).toFixed(2));
+      }
+      for (let i = 0; i < NODES; i++) {
+        const p = proj[i];
+        const el = nodeEls[i];
+        el.setAttribute('cx', p[0].toFixed(1));
+        el.setAttribute('cy', p[1].toFixed(1));
+        el.setAttribute('r', (2.2 + (p[2] + 1) * 0.85).toFixed(2));
+        el.setAttribute('opacity', (0.45 + (p[2] + 1) * 0.28).toFixed(2));
+      }
+      rafId = requestAnimationFrame(frame);
+    };
+    rafId = requestAnimationFrame(frame);
+  }
+  function stopGlobeLoop() {
+    if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+  }
+  function setGlobeSpeed(state) {
+    // Direction flips on state change. Speaking goes the other way.
+    if (state === 'listening') rotSpeed = 0.9;
+    else if (state === 'speaking') rotSpeed = -1.5;
+    else if (state === 'thinking') rotSpeed = 0.32;
+    else rotSpeed = 0.55;
+  }
+
+  buildGlobe();
 
   function setState(name) {
     if (!mode) return;
+    currentState = name;
     mode.className = 'voice-mode state-' + name;
     if (name === 'listening')  stateLabel.textContent = 'Listening';
     else if (name === 'thinking') stateLabel.textContent = 'Thinking';
     else if (name === 'speaking') stateLabel.textContent = 'Speaking';
     else stateLabel.textContent = 'Ready';
+    setGlobeSpeed(name);
   }
 
   function show() {
     if (mode) { mode.hidden = false; active = true; }
     if (micBtn) micBtn.classList.add('active');
+    startGlobeLoop();
   }
   function hide() {
     if (mode) { mode.hidden = true; active = false; }
@@ -1531,9 +1607,9 @@ pushBtn.addEventListener('click', async () => {
     transcript.textContent = '';
     transcript.classList.remove('response');
     setState('idle');
+    stopGlobeLoop();
     stopSpeakingIfAny();
     postNative({ type: 'voice_exit' });
-    // Mobile path cleanup
     if (mobileRecog) {
       try { mobileRecog.stop(); } catch {}
       mobileRecog = null;
@@ -1572,22 +1648,34 @@ pushBtn.addEventListener('click', async () => {
     transcript.classList.remove('response');
   };
 
-  // Per-utterance turn (continuous mode). Submit text → get reply → TTS speaks → orb relistens.
+  // Per-utterance turn (continuous + interruptible).
+  // If the user speaks while Sentrial is replying/thinking, stop TTS, supersede, take new turn.
   window.sentrialVoiceTurn = async function (text) {
-    if (!active || turnInFlight) return;
+    if (!active) return;
     const finalText = (text && String(text).trim()) || '';
     if (!finalText) return;
-    turnInFlight = true;
+
+    // Interrupt: stop any current TTS and bump the sequence number
+    postNative({ type: 'voice_stop_speaking' });
+    stopSpeakingIfAny();
+
+    turnSeq += 1;
+    const mySeq = turnSeq;
+
     setState('thinking');
     hint.textContent = 'Thinking…';
     transcript.textContent = finalText;
+    transcript.classList.remove('response');
     pushMsg('user', finalText);
     const typingEl = pushTyping();
+
     try {
       const r = await api('POST', '/inbound', {
         text: finalText, channel: 'voice', conversation_id: STATE.conversationId
       });
       const d = await r.json();
+      // Superseded? (User spoke again while we were fetching.)
+      if (mySeq !== turnSeq) { typingEl.remove(); return; }
       typingEl.remove();
       const reply = d.reply || '(no reply)';
       pushMsg('sentrial', reply);
@@ -1595,24 +1683,26 @@ pushBtn.addEventListener('click', async () => {
       transcript.textContent = reply;
       transcript.classList.add('response');
       setState('speaking');
-      hint.textContent = 'Tap Right-Option to exit';
+      hint.textContent = 'Speak anytime to interrupt · tap Right-Option to exit';
 
       if (isNative()) {
-        // Mac: native TTS via afplay + Aura
-        postNative({ type: 'voice_reply', text: reply });
+        postNative({ type: 'voice_reply', text: reply, seq: mySeq });
       } else {
-        // Mobile: browser TTS via SpeechSynthesis
         speakBrowser(reply, () => {
-          if (active) { setState('listening'); transcript.classList.remove('response'); transcript.textContent = ''; hint.textContent = 'I\'m listening.'; }
+          if (active && mySeq === turnSeq) {
+            setState('listening');
+            transcript.classList.remove('response');
+            transcript.textContent = '';
+            hint.textContent = "I'm listening.";
+          }
         });
       }
     } catch (e) {
+      if (mySeq !== turnSeq) { typingEl.remove(); return; }
       typingEl.remove();
       pushMsg('sentrial', '[error] ' + e.message);
       transcript.textContent = '[error] ' + e.message;
-      setState('idle');
-    } finally {
-      turnInFlight = false;
+      setState('listening');
     }
   };
 

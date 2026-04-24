@@ -47,6 +47,28 @@ def run():
     _require_mac()
     logging.basicConfig(level=logging.INFO)
 
+    # Diagnostic: log which Python is running and whether voice deps import.
+    # If Sentrial launched via launchd but deepgram is missing, the logs make it obvious.
+    log.info("menubar python: %s", sys.executable)
+    try:
+        import deepgram as _dg  # noqa: F401
+        log.info("deepgram-sdk: OK")
+    except Exception as e:  # noqa: BLE001
+        log.warning(
+            "deepgram-sdk NOT importable (%s). In this venv run:\n"
+            "  %s -m pip install deepgram-sdk sounddevice",
+            e, sys.executable,
+        )
+    try:
+        import sounddevice as _sd  # noqa: F401
+        log.info("sounddevice: OK")
+    except Exception as e:  # noqa: BLE001
+        log.warning(
+            "sounddevice NOT importable (%s). Usually fixed by:\n"
+            "  brew install portaudio && %s -m pip install sounddevice",
+            e, sys.executable,
+        )
+
     # Imports inside run() so the module can still be imported on Linux.
     import objc
     from AppKit import (
@@ -455,6 +477,12 @@ def run():
                     args=(text, api_key, voice),
                     daemon=True,
                 ).start()
+            elif kind == "voice_stop_speaking":
+                # User interrupted — stop TTS mid-playback
+                try:
+                    tts_mod.stop_playback()
+                except Exception:  # noqa: BLE001
+                    pass
             elif kind == "voice_exit":
                 tts_mod.stop_playback()
                 # Also make sure the voice session is torn down
