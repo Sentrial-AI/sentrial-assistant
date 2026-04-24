@@ -496,18 +496,33 @@ def run():
                 log.debug("JS inject failed: %s", e)
 
         # ---- WKUIDelegate: auto-grant mic to our own PWA origin ----
-        # Signature matches Obj-C: webView:requestMediaCapturePermissionForOrigin:
+        # Obj-C selector: webView:requestMediaCapturePermissionForOrigin:
         #   initiatedByFrame:type:decisionHandler:
         # Decision values: 0=prompt 1=grant 2=deny (WKPermissionDecision).
+        #
+        # If this method isn't called, PyObjC failed to bind the selector to
+        # our Python method (common cause: wrong signature metadata on a block
+        # parameter) — WebKit's default fallback is to deny.
         def webView_requestMediaCapturePermissionForOrigin_initiatedByFrame_type_decisionHandler_(
-            self, _webview, _origin, _frame, _media_type, decision_handler,
+            self, _webview, origin, _frame, media_type, decision_handler,
         ):
+            log.info(
+                "WKUIDelegate entry: origin=%s type=%s handler=%s",
+                origin, media_type, type(decision_handler).__name__,
+            )
             try:
-                # 1 = WKPermissionDecisionGrant
-                decision_handler(1)
+                decision_handler(1)  # WKPermissionDecisionGrant
                 log.info("WKUIDelegate: granted media capture")
             except Exception as e:  # noqa: BLE001
                 log.warning("WKUIDelegate grant failed: %s", e)
+
+        # Fallback: some macOS versions call the older selector shape. Include
+        # it too; one of them will dispatch.
+        def webView_requestMediaCapturePermissionForOrigin_initiatedByFrame_type_(
+            self, _webview, _origin, _frame, _media_type,
+        ):
+            log.info("WKUIDelegate (no-handler variant) called → grant")
+            return 1
 
         # ---- WKScriptMessageHandler: PWA → native ----
         def userContentController_didReceiveScriptMessage_(self, _controller, message):
