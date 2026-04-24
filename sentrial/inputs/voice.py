@@ -126,11 +126,16 @@ class VoiceSession:
 
         try:
             with ws_client.connect(url, additional_headers=headers) as ws:
+                log.info("deepgram WS connected")
                 recv_done = threading.Event()
+                bytes_sent = [0]           # closed-over counter
+                nonzero_bytes_sent = [0]   # mic-producing-audio counter
+                msg_count = [0]
 
                 def recv_loop() -> None:
                     try:
                         for raw in ws:
+                            msg_count[0] += 1
                             if not isinstance(raw, (str, bytes)):
                                 continue
                             if isinstance(raw, bytes):
@@ -142,9 +147,14 @@ class VoiceSession:
                                 msg = _json.loads(raw)
                             except ValueError:
                                 continue
-                            # Only care about the Results frames — skip Metadata/
-                            # UtteranceEnd/SpeechStarted for now.
-                            if msg.get("type") != "Results":
+                            mtype = msg.get("type")
+                            if mtype != "Results":
+                                # Non-Results frames: log type for debugging (Metadata,
+                                # SpeechStarted, UtteranceEnd, Warning, Error, …).
+                                if mtype in ("Error", "Warning"):
+                                    log.warning("deepgram %s: %s", mtype, raw[:300])
+                                else:
+                                    log.debug("deepgram frame type=%s", mtype)
                                 continue
                             try:
                                 sentence = (
@@ -155,6 +165,7 @@ class VoiceSession:
                             if not sentence:
                                 continue
                             is_final = bool(msg.get("is_final")) or bool(msg.get("speech_final"))
+                            log.info("deepgram transcript (final=%s): %s", is_final, sentence[:120])
                             if is_final:
                                 self._final_text = sentence
                                 self._on_final(sentence)
@@ -169,14 +180,36 @@ class VoiceSession:
                 recv_thread = threading.Thread(target=recv_loop, daemon=True)
                 recv_thread.start()
 
+                chunk_count = [0]
+
                 def audio_cb(indata, _frames, _time, status) -> None:
                     if status:
                         log.debug("mic status: %s", status)
                     if self._stop.is_set():
                         raise sd.CallbackStop
                     try:
-                        # indata is a cffi buffer (RawInputStream); bytes() copies it out.
-                        ws.send(bytes(indata))
+                        buf = bytes(indata)
+                        ws.send(buf)
+                        bytes_sent[0] += len(buf)
+                        # Max abs sample in this 50ms chunk. int16 little-endian.
+                        peak = 0
+                        for i in range(0, len(buf), 2):
+                            s = buf[i] | (buf[i+1] << 8)
+                            if s >= 0x8000:
+                                s -= 0x10000
+                            a = -s if s < 0 else s
+                            if a > peak:
+                                peak = a
+                        if peak > 200:  # ~noise floor
+                            nonzero_bytes_sent[0] += len(buf)
+                        chunk_count[0] += 1
+                        # Every ~2s (40 chunks at 50ms each) surface a heartbeat so we
+                        # can tell mic vs WS vs Deepgram when voice is dead silent.
+                        if chunk_count[0] % 40 == 0:
+                            log.info(
+                                "voice heartbeat: sent=%dB audio_chunks=%d peak=%d frames_received=%d",
+                                bytes_sent[0], chunk_count[0], peak, msg_count[0],
+                            )
                     except Exception as send_err:  # noqa: BLE001
                         log.warning("deepgram send failed: %s", send_err)
 

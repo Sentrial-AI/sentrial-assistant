@@ -341,35 +341,53 @@ def run():
 
         def _install_voice_hotkey(self):
             """
-            Global monitor on flagsChanged. Tap Right-Option toggles Voice Mode on/off.
-            On: open popover + start continuous VoiceSession.
-            Off: close session; TTS playback also stopped.
+            Tap Right-Option toggles Voice Mode on/off.
 
-            Requires Input Monitoring permission (user grants on first run via TCC prompt).
+            Global monitor fires when Sentrial is NOT the active app (background
+            press); local monitor fires when Sentrial IS active (e.g. a detached
+            panel is focused, or the popover stole focus). We install both so
+            the toggle works from anywhere.
+
+            Global monitor requires Input Monitoring permission — granted on
+            first run via the TCC prompt. The local monitor works without it.
             """
+            def on_press():
+                log.info("voice hotkey fired (right-option)")
+                self._toggle_voice_mode()
+
             def handler(event):
                 try:
                     flags = int(event.modifierFlags())
                     is_down = bool(flags & RIGHT_OPTION_MASK)
                     if is_down and not self._r_opt_down:
                         self._r_opt_down = True
-                        self._toggle_voice_mode()
+                        on_press()
                     elif not is_down and self._r_opt_down:
                         self._r_opt_down = False
                         # release is a no-op — we toggle only on key press
                 except Exception as e:  # noqa: BLE001
                     log.warning("voice hotkey handler error: %s", e)
 
-            self._voice_monitor = (
+            self._voice_monitor_global = (
                 NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
                     NSEventMaskFlagsChanged, handler
                 )
             )
-            if self._voice_monitor is None:
+            if self._voice_monitor_global is None:
                 log.warning(
-                    "voice hotkey monitor not installed — grant Input Monitoring "
-                    "in System Settings → Privacy & Security"
+                    "voice hotkey GLOBAL monitor not installed — grant Input "
+                    "Monitoring in System Settings → Privacy & Security"
                 )
+
+            def local_handler(event):
+                handler(event)
+                return event  # pass event through so system keeps processing it
+
+            self._voice_monitor_local = (
+                NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
+                    NSEventMaskFlagsChanged, local_handler
+                )
+            )
 
         def _toggle_voice_mode(self):
             if self._voice is None:
