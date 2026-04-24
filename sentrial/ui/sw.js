@@ -2,7 +2,7 @@
 // Network-first for HTML so UI changes propagate immediately.
 // Bump CACHE when invalidating all caches.
 
-const CACHE = 'sentrial-v3';
+const CACHE = 'sentrial-v4';
 const STATIC = ['/icon.svg', '/manifest.json', '/ui/logo.png', '/ui/logo-192.png', '/ui/logo-64.png'];
 
 self.addEventListener('install', (e) => {
