@@ -11,20 +11,27 @@ when to stop. Keep it tight.
 Improve Liam's experience on repeat tasks by learning from every interaction.
 Specifically: reduce the number of times Liam has to correct, redo, or repeat himself.
 
-## Editable surfaces (the agent may propose diffs to these)
+## Editable surfaces (the agent may propose diffs / auto-apply low-risk writes)
 
+**Proposal-gated (require Liam's approval):**
 - `sentrial/config/system_prompt.md` — how Sentrial talks and when it acts
-- `sentrial/mcps/creative/scope_templates/*.md` — scope-preview phrasing per job kind (will be created as needed)
-- `sentrial/evolution/lessons/*.md` — distilled lessons added after notable interactions
-- `tier_overrides` in the `facts` table (scope="tier_overrides") — learned exceptions to the default tier classifier
+- `sentrial/mcps/creative/scope_templates/*.md` — scope-preview phrasing per job kind
+- `tier_overrides` in the `facts` table (scope="tier_overrides") — learned exceptions
 
-## Frozen surfaces (the agent must NOT propose changes here)
+**Auto-apply (low-risk, reversible, watchdog-monitored):**
+- `/data/evolution/user_profile.yaml` — structured preferences / vocabulary / schedule, weighted-evidence updates via `profile.observe()`
+- `/data/evolution/lessons/<id>.json` — atomic rules distilled from interactions; retrieved pre-turn by relevance; retire-on-conflict
+- `/data/evolution/playbooks/<slug>.md` — per-task recipes; trivial updates auto-applied, new-kind creation requires proposal
+- `/data/evolution/kg.sqlite` — entities + edges for clients / projects / people / deals; grown by distillation
+- `/data/evolution/trials.sqlite` — A/B experiment state (bounded, auto-expire)
+
+## Frozen surfaces (the agent must NOT propose OR auto-write to these)
 
 - `sentrial/core/secrets.py` and anything Keychain/env-var related
 - `sentrial/core/confirmation.py` base tiers (Tier enum, TIER_HINTS, EXPLICIT_TIERS entries for tier 3)
 - The security section of `system_prompt.md` ("Trust and authority — action tiers" and "Security rules — non-negotiable")
 - Anything under `scripts/`, `Dockerfile`, `railway.toml`, `pyproject.toml`, `requirements.txt`
-- The evolution loop itself (this module)
+- **The evolution system itself** — every file under `sentrial/evolution/*.py` and `sentrial/evolution/base/` is frozen. The loop may never edit its own guardrails. Integrity watchdog (`integrity.py`) verifies hashes each run.
 
 If the agent believes a frozen surface needs changing, it must emit a `safety_concern`
 proposal explaining the case, for Liam to manually action — never a direct edit.

@@ -404,6 +404,167 @@ def build_app(
             "calendar": calendar_slot,
         }
 
+    # ---- Evolution surfaces (profile / lessons / playbooks / KG / trials / integrity / reset) ----
+
+    @api.get("/api/evolution/profile", dependencies=[Depends(require_auth)])
+    async def ev_profile_get():
+        from sentrial.evolution import profile as prof
+        return {"profile": prof.load(), "summary": prof.summary_for_agent()}
+
+    @api.post("/api/evolution/profile/observe", dependencies=[Depends(require_auth)])
+    async def ev_profile_observe(body: dict):
+        from sentrial.evolution import profile as prof
+        path = body.get("path")
+        if not path or "value" not in body:
+            raise HTTPException(status_code=400, detail="path + value required")
+        res = prof.observe(
+            str(path), body["value"],
+            weight=float(body.get("weight") or 0.4),
+            reason=str(body.get("reason") or "manual"),
+        )
+        return res
+
+    @api.get("/api/evolution/lessons", dependencies=[Depends(require_auth)])
+    async def ev_lessons_list(status: str = "active"):
+        from sentrial.evolution import lessons as lsn
+        return {"lessons": lsn.list_all(status=status)}
+
+    @api.post("/api/evolution/lessons", dependencies=[Depends(require_auth)])
+    async def ev_lessons_create(body: dict):
+        from sentrial.evolution import lessons as lsn
+        rule = str(body.get("rule") or "").strip()
+        if not rule:
+            raise HTTPException(status_code=400, detail="rule required")
+        doc = lsn.create(
+            rule=rule,
+            tags=list(body.get("tags") or []),
+            keywords=list(body.get("keywords") or []),
+            confidence=float(body.get("confidence") or 0.6),
+            source="user",
+        )
+        return doc
+
+    @api.post("/api/evolution/lessons/{lid}/retire", dependencies=[Depends(require_auth)])
+    async def ev_lessons_retire(lid: str, body: dict | None = None):
+        from sentrial.evolution import lessons as lsn
+        ok = lsn.retire(lid, reason=(body or {}).get("reason", ""))
+        if not ok:
+            raise HTTPException(status_code=404, detail="not found")
+        return {"ok": True}
+
+    @api.get("/api/evolution/playbooks", dependencies=[Depends(require_auth)])
+    async def ev_playbooks_list():
+        from sentrial.evolution import playbooks as pb
+        return {"playbooks": pb.list_all()}
+
+    @api.get("/api/evolution/playbooks/{slug}", dependencies=[Depends(require_auth)])
+    async def ev_playbooks_get(slug: str):
+        from sentrial.evolution import playbooks as pb
+        body, meta = pb.read(slug)
+        if meta is None and body is None:
+            raise HTTPException(status_code=404, detail="not found")
+        return {"meta": meta, "body": body}
+
+    @api.post("/api/evolution/playbooks", dependencies=[Depends(require_auth)])
+    async def ev_playbooks_upsert(body: dict):
+        from sentrial.evolution import playbooks as pb
+        slug = str(body.get("slug") or "").strip()
+        label = str(body.get("label") or slug)
+        md = str(body.get("body_md") or "")
+        if not slug or not md:
+            raise HTTPException(status_code=400, detail="slug + body_md required")
+        return pb.create_or_update(slug=slug, label=label, body_md=md, source="user")
+
+    @api.delete("/api/evolution/playbooks/{slug}", dependencies=[Depends(require_auth)])
+    async def ev_playbooks_delete(slug: str):
+        from sentrial.evolution import playbooks as pb
+        ok = pb.delete(slug)
+        if not ok:
+            raise HTTPException(status_code=404, detail="not found")
+        return {"ok": True}
+
+    @api.get("/api/evolution/kg", dependencies=[Depends(require_auth)])
+    async def ev_kg_list(type: str | None = None, limit: int = 200):
+        from sentrial.evolution import kg
+        return {"entities": kg.list_entities(etype=type, limit=limit)}
+
+    @api.get("/api/evolution/kg/{entity_id}", dependencies=[Depends(require_auth)])
+    async def ev_kg_get(entity_id: str):
+        from sentrial.evolution import kg
+        card = kg.card(entity_id)
+        if not card:
+            raise HTTPException(status_code=404, detail="not found")
+        return {"card": card, "edges": kg.edges_from(entity_id)}
+
+    @api.post("/api/evolution/kg", dependencies=[Depends(require_auth)])
+    async def ev_kg_upsert(body: dict):
+        from sentrial.evolution import kg
+        etype = str(body.get("type") or "").strip()
+        name = str(body.get("name") or "").strip()
+        if not etype or not name:
+            raise HTTPException(status_code=400, detail="type + name required")
+        eid = kg.upsert_entity(
+            etype=etype, name=name,
+            attrs=body.get("attrs") or {},
+            aliases=list(body.get("aliases") or []),
+            confidence=float(body.get("confidence") or 0.7),
+        )
+        return {"id": eid}
+
+    @api.get("/api/evolution/trials", dependencies=[Depends(require_auth)])
+    async def ev_trials_list():
+        from sentrial.evolution import trials as tr
+        return {"trials": tr.list_all()}
+
+    @api.get("/api/evolution/trials/{tid}", dependencies=[Depends(require_auth)])
+    async def ev_trials_get(tid: str):
+        from sentrial.evolution import trials as tr
+        return tr.summarize(tid)
+
+    @api.post("/api/evolution/trials", dependencies=[Depends(require_auth)])
+    async def ev_trials_start(body: dict):
+        from sentrial.evolution import trials as tr
+        try:
+            return tr.start_trial(
+                name=str(body.get("name") or "untitled"),
+                target=str(body.get("target") or ""),
+                baseline_body=str(body.get("baseline_body") or ""),
+                variant_body=str(body.get("variant_body") or ""),
+                treatment_pct=int(body.get("treatment_pct") or 25),
+                max_duration_h=int(body.get("max_duration_h") or 168),
+            )
+        except (ValueError, TypeError) as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    @api.post("/api/evolution/trials/{tid}/stop", dependencies=[Depends(require_auth)])
+    async def ev_trials_stop(tid: str, body: dict | None = None):
+        from sentrial.evolution import trials as tr
+        reason = (body or {}).get("reason", "manual")
+        if not tr.stop_trial(tid, reason=reason):
+            raise HTTPException(status_code=404, detail="not running or not found")
+        return {"ok": True}
+
+    @api.get("/api/evolution/integrity", dependencies=[Depends(require_auth)])
+    async def ev_integrity(full: bool = False):
+        from sentrial.evolution import integrity
+        return integrity.run(full=full).to_dict()
+
+    @api.post("/api/evolution/reset", dependencies=[Depends(require_auth)])
+    async def ev_reset(body: dict):
+        from sentrial.evolution import reset as rst
+        level = str(body.get("level") or "")
+        confirm = body.get("confirm_token")
+        try:
+            manifest = rst.reset(level=level, confirm_token=confirm)
+        except (ValueError, PermissionError) as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        return manifest
+
+    @api.get("/api/evolution/reset/backups", dependencies=[Depends(require_auth)])
+    async def ev_reset_backups():
+        from sentrial.evolution import reset as rst
+        return {"backups": rst.list_backups()}
+
     @api.get("/api/metrics/trend", dependencies=[Depends(require_auth)])
     async def metrics_trend_ep():
         """Compare current 7d metrics vs previous 7d to surface direction of change."""

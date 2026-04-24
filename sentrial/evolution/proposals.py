@@ -188,14 +188,33 @@ def revert(proposal_id: str) -> dict:
 
 
 FROZEN_PATTERNS = [
+    # Security-sensitive
     "sentrial/core/secrets.py",
     "sentrial/core/confirmation.py",
+    # Deployment + build machinery
     "scripts/",
     "Dockerfile",
     "railway.toml",
     "pyproject.toml",
     "requirements.txt",
-    "sentrial/evolution/",
+    # The evolution system itself (including new modules) — frozen to protect
+    # it from self-modification. To change these, open a real code PR; the
+    # self-improvement loop may never edit its own guardrails.
+    "sentrial/evolution/loop.py",
+    "sentrial/evolution/metrics.py",
+    "sentrial/evolution/proposals.py",
+    "sentrial/evolution/replay.py",
+    "sentrial/evolution/integrity.py",
+    "sentrial/evolution/reset.py",
+    "sentrial/evolution/distill.py",
+    "sentrial/evolution/trials.py",
+    "sentrial/evolution/retrieval.py",
+    "sentrial/evolution/profile.py",
+    "sentrial/evolution/lessons.py",
+    "sentrial/evolution/playbooks.py",
+    "sentrial/evolution/kg.py",
+    # Baseline templates used by reset
+    "sentrial/evolution/base/",
 ]
 
 
