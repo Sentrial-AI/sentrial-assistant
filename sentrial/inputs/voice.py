@@ -74,14 +74,18 @@ class VoiceSession:
             )
         except ImportError as e:
             log.warning("deepgram-sdk not installed: %s", e)
-            self._on_error("deepgram-sdk not installed")
+            self._on_error(
+                "deepgram-sdk missing — run: ./.venv/bin/pip install deepgram-sdk sounddevice"
+            )
             return
 
         try:
             import sounddevice as sd
         except ImportError as e:
             log.warning("sounddevice not installed: %s", e)
-            self._on_error("sounddevice not installed (pip install sounddevice)")
+            self._on_error(
+                "sounddevice missing — run: ./.venv/bin/pip install sounddevice"
+            )
             return
 
         connection = None

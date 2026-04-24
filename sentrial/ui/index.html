@@ -142,7 +142,7 @@
   .filter-chip.active { background: var(--accent-muted); color: var(--accent); border-color: transparent; }
 
   /* ---------- CHAT ---------- */
-  .view-chat { padding: 0; position: relative; }
+  .view-chat { padding: 0; }
   .chat-controls {
     display: grid;
     grid-template-columns: 36px 1fr 36px;
@@ -576,81 +576,108 @@
   .trend-delta-arrow.down { color: var(--warn); }
   .trend-delta-arrow.flat { color: var(--text-3); }
 
-  /* ---------- TODAY (hub dashboard) ---------- */
-  .today-body { padding: 4px 20px 80px; overflow-y: auto; display: flex; flex-direction: column; gap: 20px; }
-  .today-section { }
+  /* ---------- DASHBOARD (hub) ---------- */
+  .today-body { padding: 4px 20px 80px; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 18px; }
   .today-section-title {
-    font-size: 12px; font-weight: 500;
-    letter-spacing: 0.05em; text-transform: uppercase;
-    color: var(--text-3); margin: 0 0 10px;
-    display: flex; justify-content: space-between; align-items: baseline;
+    font-size: 11px; font-weight: 500;
+    letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--text-3); margin: 0 0 8px;
+    display: flex; justify-content: space-between; align-items: baseline; gap: 8px;
   }
-  .today-section-title .count {
+  .today-section-title .count,
+  .today-section-title .progress-text {
     font-family: var(--mono); font-size: 11px;
     color: var(--text-3); letter-spacing: 0;
   }
 
   .integ-grid {
-    display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-    gap: 8px;
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+    gap: 6px;
   }
   .integ-card {
     background: var(--surface); border: 1px solid var(--border);
-    border-radius: 10px; padding: 10px 12px;
-    display: flex; align-items: center; gap: 10px;
+    border-radius: 8px; padding: 8px 10px;
+    display: flex; align-items: center; gap: 8px; min-width: 0;
   }
   .integ-dot {
-    width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+    width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
     background: var(--success); box-shadow: 0 0 6px rgba(74,222,128,0.5);
   }
   .integ-dot.pending { background: var(--warn); box-shadow: 0 0 6px rgba(251,191,36,0.5); }
   .integ-dot.off { background: var(--text-faint); box-shadow: none; }
-  .integ-text {
-    display: flex; flex-direction: column; min-width: 0; flex: 1;
-  }
-  .integ-name { font-size: 13px; font-weight: 500; color: var(--text); }
-  .integ-detail { font-size: 11px; color: var(--text-3); font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .integ-name { font-size: 12px; font-weight: 500; color: var(--text); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   .warning-card {
     background: var(--surface); border: 1px solid var(--border);
     border-left: 3px solid var(--warn);
-    border-radius: 8px; padding: 10px 14px;
-    margin-bottom: 8px;
+    border-radius: 8px; padding: 8px 12px;
+    margin-bottom: 6px;
     display: flex; gap: 10px; align-items: flex-start;
   }
   .warning-card.danger { border-left-color: var(--danger); }
   .warning-card.info { border-left-color: var(--accent); }
-  .warning-icon {
-    font-family: var(--mono); font-size: 14px; color: var(--warn);
-    flex-shrink: 0; line-height: 1.3;
-  }
+  .warning-icon { font-family: var(--mono); font-size: 13px; color: var(--warn); flex-shrink: 0; line-height: 1.3; }
   .warning-card.danger .warning-icon { color: var(--danger); }
   .warning-card.info .warning-icon { color: var(--accent); }
   .warning-text { font-size: 13px; color: var(--text); line-height: 1.5; flex: 1; }
-  .warning-time { font-size: 11px; color: var(--text-3); font-family: var(--mono); margin-top: 2px; }
 
-  .todo-card {
+  /* Progress bar */
+  .todo-progress {
+    height: 3px; border-radius: 2px;
+    background: var(--surface);
+    overflow: hidden; margin-bottom: 10px;
+  }
+  .todo-progress-fill {
+    height: 100%;
+    background: var(--accent);
+    transition: width 0.4s ease;
+  }
+
+  /* Compact todo rows */
+  .todo-list-compact { display: flex; flex-direction: column; }
+  .todo-row {
+    display: grid;
+    grid-template-columns: 18px 1fr auto;
+    gap: 10px; align-items: center;
+    padding: 9px 12px;
     background: var(--surface); border: 1px solid var(--border);
-    border-radius: 10px; padding: 12px 14px;
-    margin-bottom: 8px;
-    display: flex; gap: 12px; align-items: flex-start;
+    border-radius: 8px;
+    margin-bottom: 5px;
+    cursor: pointer;
+    transition: all 0.12s;
   }
-  .todo-checkbox {
-    width: 18px; height: 18px; border-radius: 50%;
-    border: 1.5px solid var(--border-strong); flex-shrink: 0;
-    cursor: pointer; margin-top: 2px;
-    transition: all 0.15s;
+  .todo-row:hover { border-color: var(--border-strong); background: var(--elevated); }
+  .todo-row.meeting {
+    border-left: 3px solid var(--warn);
+    background: linear-gradient(to right, rgba(251,191,36,0.06), var(--surface) 40%);
   }
-  .todo-checkbox:hover { border-color: var(--accent); background: var(--accent-muted); }
-  .todo-body { flex: 1; min-width: 0; }
-  .todo-title { font-size: 14px; color: var(--text); line-height: 1.4; }
-  .todo-meta {
-    margin-top: 4px;
-    font-size: 11px; font-family: var(--mono); color: var(--text-3);
-    letter-spacing: 0.03em;
+  .todo-row.overdue { border-left: 3px solid var(--danger); }
+  .todo-check {
+    width: 16px; height: 16px; border-radius: 50%;
+    border: 1.5px solid var(--text-3);
+    background: transparent;
+    cursor: pointer; transition: all 0.15s;
+    padding: 0; flex-shrink: 0;
   }
-  .todo-due-soon { color: var(--warn); }
-  .todo-due-past { color: var(--danger); }
+  .todo-check:hover { border-color: var(--accent); background: var(--accent-muted); }
+  .todo-row.meeting .todo-check { border-color: var(--warn); }
+  .todo-text {
+    font-size: 13px; line-height: 1.35; color: var(--text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    min-width: 0;
+  }
+  .todo-row.meeting .todo-text { color: #fde68a; font-weight: 500; }
+  .todo-when {
+    font-family: var(--mono); font-size: 10px;
+    letter-spacing: 0.05em;
+    color: var(--text-3);
+    padding: 3px 6px; border-radius: 5px;
+    background: var(--elevated);
+    white-space: nowrap; flex-shrink: 0;
+  }
+  .todo-when.soon { color: var(--warn); background: rgba(251,191,36,0.14); }
+  .todo-when.now { color: var(--accent); background: var(--accent-muted); font-weight: 500; }
+  .todo-when.past { color: var(--danger); background: rgba(248,113,113,0.14); }
 
   /* ---------- Voice banner ---------- */
   .voice-banner {
@@ -704,7 +731,7 @@
   @keyframes voice-pulse { 0%,100%{ opacity: 1 } 50%{ opacity: 0.4 } }
   @keyframes voice-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 
-  /* ---------- Voice Mode overlay (fullscreen hero when Right-Option engaged) ---------- */
+  /* ---------- Voice Mode: wireframe globe overlay ---------- */
   .voice-mode {
     position: absolute; inset: 0;
     z-index: 70;
@@ -715,81 +742,132 @@
     align-items: center; justify-content: center;
     padding: 40px 20px;
     animation: voice-mode-in 0.22s ease-out;
+    overflow: hidden;
   }
   .voice-mode[hidden] { display: none; }
   @keyframes voice-mode-in { from { opacity: 0; } to { opacity: 1; } }
 
+  /* Animated grid background that reacts to state */
+  .voice-mode::before {
+    content: '';
+    position: absolute; inset: 0;
+    background-image:
+      radial-gradient(circle at 50% 50%, transparent 0%, rgba(5,6,10,0.9) 75%),
+      repeating-linear-gradient(0deg, rgba(94,234,212,0.05) 0 1px, transparent 1px 40px),
+      repeating-linear-gradient(90deg, rgba(94,234,212,0.05) 0 1px, transparent 1px 40px);
+    transition: background-image 0.6s ease;
+    pointer-events: none;
+    animation: grid-drift 18s linear infinite;
+  }
+  .voice-mode.state-speaking::before {
+    background-image:
+      radial-gradient(circle at 50% 50%, transparent 0%, rgba(5,6,10,0.9) 75%),
+      repeating-linear-gradient(0deg, rgba(251,191,36,0.06) 0 1px, transparent 1px 40px),
+      repeating-linear-gradient(90deg, rgba(251,191,36,0.06) 0 1px, transparent 1px 40px);
+  }
+  @keyframes grid-drift {
+    from { background-position: 0 0, 0 0, 0 0; }
+    to   { background-position: 0 0, 0 800px, 800px 0; }
+  }
+
   .orb-wrap {
     position: relative;
-    width: 220px; height: 220px;
-    display: grid; place-items: center;
-  }
-  .orb {
-    position: absolute;
-    width: 120px; height: 120px; border-radius: 50%;
-    background: radial-gradient(circle at 50% 45%, #a7f3d0 0%, #5eead4 45%, rgba(94,234,212,0.35) 80%, transparent 100%);
-    box-shadow:
-      0 0 40px rgba(94, 234, 212, 0.55),
-      0 0 80px rgba(94, 234, 212, 0.25);
-    transition: background 0.6s ease, box-shadow 0.6s ease;
-    animation: orb-breathe 2.6s ease-in-out infinite;
-  }
-  .voice-mode.state-speaking .orb {
-    background: radial-gradient(circle at 50% 45%, #fde68a 0%, #fbbf24 45%, rgba(251,191,36,0.35) 80%, transparent 100%);
-    box-shadow:
-      0 0 40px rgba(251, 191, 36, 0.6),
-      0 0 80px rgba(251, 191, 36, 0.28);
-    animation: orb-breathe 1.6s ease-in-out infinite;
-  }
-  .voice-mode.state-thinking .orb {
-    background: radial-gradient(circle at 50% 45%, #cbd5e1 0%, #64748b 45%, rgba(100,116,139,0.35) 80%, transparent 100%);
-    box-shadow: 0 0 30px rgba(100, 116, 139, 0.4);
-    animation: orb-breathe 3.6s ease-in-out infinite;
-  }
-  .voice-mode.state-idle .orb {
-    animation: orb-breathe 4s ease-in-out infinite;
-    opacity: 0.75;
-  }
-  @keyframes orb-breathe {
-    0%,100% { transform: scale(1); }
-    50% { transform: scale(1.08); }
+    width: 260px; height: 260px;
+    perspective: 900px;
+    z-index: 1;
   }
 
-  .ring {
-    position: absolute;
-    width: 120px; height: 120px;
+  /* Wireframe globe */
+  .globe {
+    position: absolute; inset: 0;
+    transform-style: preserve-3d;
+    animation: globe-spin 16s linear infinite;
+    transition: filter 0.6s ease;
+    filter: drop-shadow(0 0 24px rgba(94,234,212,0.45));
+  }
+  .voice-mode.state-speaking .globe {
+    filter: drop-shadow(0 0 26px rgba(251,191,36,0.5));
+    animation-duration: 6s;
+  }
+  .voice-mode.state-thinking .globe {
+    filter: drop-shadow(0 0 14px rgba(100,116,139,0.35));
+    animation-duration: 28s;
+  }
+  .voice-mode.state-idle .globe { animation-duration: 22s; opacity: 0.8; }
+  @keyframes globe-spin {
+    from { transform: rotateX(22deg) rotateY(0deg); }
+    to   { transform: rotateX(22deg) rotateY(360deg); }
+  }
+
+  .g-ring {
+    position: absolute; inset: 0;
+    border: 1px solid rgba(94, 234, 212, 0.55);
     border-radius: 50%;
-    border: 1.5px solid rgba(94, 234, 212, 0.55);
-    opacity: 0;
-    animation: ring-out 2.4s ease-out infinite;
-    pointer-events: none;
+    transition: border-color 0.6s ease;
+    box-sizing: border-box;
   }
-  .voice-mode.state-speaking .ring { border-color: rgba(251, 191, 36, 0.55); animation-duration: 1.4s; }
-  .voice-mode.state-thinking .ring { border-color: rgba(100, 116, 139, 0.4); animation-duration: 3.2s; }
-  .voice-mode.state-idle .ring { opacity: 0; animation: none; }
-  .ring.r2 { animation-delay: 0.45s; }
-  .ring.r3 { animation-delay: 0.9s; }
-  @keyframes ring-out {
-    0% { transform: scale(1); opacity: 0.7; }
-    100% { transform: scale(2.4); opacity: 0; }
+  .voice-mode.state-speaking .g-ring { border-color: rgba(251, 191, 36, 0.6); }
+  .voice-mode.state-thinking .g-ring { border-color: rgba(100, 116, 139, 0.45); }
+
+  /* Longitudes (vertical rings rotated around Y) */
+  .g-ring.lon0 { transform: rotateY(0deg); }
+  .g-ring.lon1 { transform: rotateY(30deg); }
+  .g-ring.lon2 { transform: rotateY(60deg); }
+  .g-ring.lon3 { transform: rotateY(90deg); }
+  .g-ring.lon4 { transform: rotateY(120deg); }
+  .g-ring.lon5 { transform: rotateY(150deg); }
+
+  /* Latitudes (horizontal rings, smaller at poles) */
+  .g-ring.lat0 { transform: rotateX(90deg); }
+  .g-ring.lat-n1 { transform: rotateX(90deg) translateZ(-55px); width: 78%; height: 78%; top: 11%; left: 11%; }
+  .g-ring.lat-n2 { transform: rotateX(90deg) translateZ(-100px); width: 45%; height: 45%; top: 27.5%; left: 27.5%; }
+  .g-ring.lat-p1 { transform: rotateX(90deg) translateZ(55px); width: 78%; height: 78%; top: 11%; left: 11%; }
+  .g-ring.lat-p2 { transform: rotateX(90deg) translateZ(100px); width: 45%; height: 45%; top: 27.5%; left: 27.5%; }
+
+  /* Node points on the surface — glowing dots that pulse */
+  .g-node {
+    position: absolute;
+    top: 50%; left: 50%;
+    width: 6px; height: 6px; border-radius: 50%;
+    margin: -3px 0 0 -3px;
+    background: #5eead4;
+    box-shadow: 0 0 10px #5eead4;
+    transition: background 0.6s ease, box-shadow 0.6s ease;
   }
+  .voice-mode.state-speaking .g-node { background: #fbbf24; box-shadow: 0 0 10px #fbbf24; }
+  .voice-mode.state-thinking .g-node { background: #94a3b8; box-shadow: 0 0 6px #94a3b8; }
+  .g-node.p1 { transform: rotateY(0deg)   translateZ(130px); }
+  .g-node.p2 { transform: rotateY(72deg)  translateZ(130px); }
+  .g-node.p3 { transform: rotateY(144deg) translateZ(130px); }
+  .g-node.p4 { transform: rotateY(216deg) translateZ(130px); }
+  .g-node.p5 { transform: rotateY(288deg) translateZ(130px); }
+  .g-node.p6 { transform: rotateX(90deg)  translateZ(130px); }
+  .g-node.p7 { transform: rotateX(-90deg) translateZ(130px); }
+
+  /* Audio reactivity — scale pulse layered over spin */
+  .voice-mode.state-listening .orb-wrap { animation: orb-breathe 2.4s ease-in-out infinite; }
+  .voice-mode.state-speaking  .orb-wrap { animation: orb-breathe-fast 1.1s ease-in-out infinite; }
+  @keyframes orb-breathe { 0%,100% { transform: scale(1); } 50% { transform: scale(1.06); } }
+  @keyframes orb-breathe-fast { 0%,100% { transform: scale(1); } 50% { transform: scale(1.1); } }
 
   .voice-state-label {
-    margin-top: 36px;
+    margin-top: 32px;
     font-size: 11px; letter-spacing: 0.4em;
     text-transform: uppercase; color: var(--text-2);
+    z-index: 1;
   }
   .voice-mode.state-listening .voice-state-label { color: var(--accent); }
   .voice-mode.state-speaking .voice-state-label { color: var(--warn); }
 
   .voice-transcript {
-    margin-top: 20px;
-    max-width: 520px; min-height: 3em;
+    margin-top: 18px;
+    max-width: 520px; min-height: 2.5em;
     text-align: center;
-    font-size: 18px; font-weight: 500;
+    font-size: 17px; font-weight: 500;
     line-height: 1.45; color: var(--text);
     letter-spacing: -0.01em;
     padding: 0 20px;
+    z-index: 1;
   }
   .voice-transcript.response { font-family: var(--sans); color: #fde68a; }
 
@@ -798,6 +876,7 @@
     bottom: 24px;
     font-size: 11px; letter-spacing: 0.15em;
     color: var(--text-3); text-transform: uppercase;
+    z-index: 1;
   }
 </style>
 </head>
@@ -859,17 +938,33 @@
         </div>
       </div>
 
-      <!-- Voice Mode full overlay — animated orb, state-colored -->
+      <!-- Voice Mode: wireframe globe overlay -->
       <div class="voice-mode state-idle" id="voice-mode" hidden>
         <div class="orb-wrap">
-          <div class="ring r1"></div>
-          <div class="ring r2"></div>
-          <div class="ring r3"></div>
-          <div class="orb"></div>
+          <div class="globe" id="voice-globe">
+            <div class="g-ring lon0"></div>
+            <div class="g-ring lon1"></div>
+            <div class="g-ring lon2"></div>
+            <div class="g-ring lon3"></div>
+            <div class="g-ring lon4"></div>
+            <div class="g-ring lon5"></div>
+            <div class="g-ring lat-n2"></div>
+            <div class="g-ring lat-n1"></div>
+            <div class="g-ring lat0"></div>
+            <div class="g-ring lat-p1"></div>
+            <div class="g-ring lat-p2"></div>
+            <div class="g-node p1"></div>
+            <div class="g-node p2"></div>
+            <div class="g-node p3"></div>
+            <div class="g-node p4"></div>
+            <div class="g-node p5"></div>
+            <div class="g-node p6"></div>
+            <div class="g-node p7"></div>
+          </div>
         </div>
         <div class="voice-state-label" id="voice-state-label">Ready</div>
         <div class="voice-transcript" id="voice-transcript"></div>
-        <div class="voice-hint" id="voice-hint">Hold Right-Option to speak</div>
+        <div class="voice-hint" id="voice-hint">Tap Right-Option to speak</div>
       </div>
       <!-- History drawer overlay (inside chat view for proper mobile layering) -->
       <div class="history-drawer" id="history-drawer" hidden>
@@ -1740,6 +1835,59 @@ async function loadToday() {
   } catch {}
 }
 
+// --- Todo helpers ---
+const MEETING_RE = /\b(meeting|call with|sync with|standup|1:1|catch.?up|interview|pitch|discovery|kickoff|coffee with|lunch with)\b/i;
+const TIME_RANGE_RE = /\b(\d{1,2})(?::(\d{2}))?\s*[–\-—]\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i;
+
+function isMeetingTitle(title) {
+  return MEETING_RE.test(title || '') || TIME_RANGE_RE.test(title || '');
+}
+
+function parseTitleTimeToday(title) {
+  // Try to find a time in the title like "1:00–2:00" or "3pm" and return a Date for TODAY at that time.
+  const m = (title || '').match(TIME_RANGE_RE);
+  if (!m) return null;
+  let h = parseInt(m[1], 10);
+  const mm = parseInt(m[2] || '0', 10);
+  const ampm = (m[5] || '').toLowerCase();
+  if (ampm === 'pm' && h < 12) h += 12;
+  else if (ampm === 'am' && h === 12) h = 0;
+  else if (!ampm && h < 8) h += 12; // heuristic: 1:00 probably means 1pm on a workday
+  const d = new Date();
+  d.setHours(h, mm, 0, 0);
+  return d;
+}
+
+function whenChip(todo, now) {
+  // Prefer an explicit due date. Otherwise fall back to a parsed time in the title.
+  let when = null;
+  if (todo.due) {
+    const due = new Date(todo.due);
+    if (!isNaN(due)) when = due;
+  }
+  if (!when) when = parseTitleTimeToday(todo.title || '');
+  if (!when) return { label: '', cls: '' };
+
+  const diffMin = Math.round((when - now) / 60000);
+  if (diffMin < -10) return { label: 'past', cls: 'past' };
+  if (diffMin <= 0) return { label: 'now', cls: 'now' };
+  if (diffMin < 60) return { label: `in ${diffMin}m`, cls: 'soon' };
+  if (diffMin < 60 * 8) return { label: `in ${Math.round(diffMin / 60)}h`, cls: 'soon' };
+  // Beyond today
+  const sameDay = when.toDateString() === now.toDateString();
+  if (sameDay) return { label: when.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }), cls: '' };
+  const oneDay = 86400 * 1000;
+  if ((when - now) < oneDay * 2) return { label: 'tomorrow', cls: '' };
+  return { label: when.toLocaleDateString([], { month: 'short', day: 'numeric' }), cls: '' };
+}
+
+function shortenTitle(title) {
+  // Drop long trailing clauses after an em dash / hyphen so cards stay single-line.
+  if (!title) return '(untitled)';
+  const cut = title.split(/\s+[–—-]\s+/)[0];
+  return cut.length < title.length ? cut : title;
+}
+
 function renderToday(d) {
   const el = document.getElementById('today-body');
   if (!el) return;
@@ -1747,14 +1895,7 @@ function renderToday(d) {
   // Integrations
   const integsHtml = (d.integrations || []).map(i => {
     const cls = i.status === 'active' ? '' : i.status === 'pending_auth' ? 'pending' : 'off';
-    return `
-      <div class="integ-card">
-        <div class="integ-dot ${cls}"></div>
-        <div class="integ-text">
-          <span class="integ-name">${esc(i.name)}</span>
-          <span class="integ-detail">${esc(i.detail)}</span>
-        </div>
-      </div>`;
+    return `<div class="integ-card"><div class="integ-dot ${cls}"></div><span class="integ-name">${esc(i.name)}</span></div>`;
   }).join('');
 
   // Warnings
@@ -1762,75 +1903,75 @@ function renderToday(d) {
     ? (d.warnings || []).map(w => {
         const severity = w.type === 'job_failed' || w.type === 'integration_error' ? 'danger'
                       : w.type === 'proposals_pending' ? 'info' : '';
-        const t = w.time ? new Date(w.time).toLocaleString() : '';
-        return `
-          <div class="warning-card ${severity}">
-            <span class="warning-icon">!</span>
-            <div class="warning-text">
-              ${esc(w.text)}
-              ${t ? `<div class="warning-time">${esc(t)}</div>` : ''}
-            </div>
-          </div>`;
+        return `<div class="warning-card ${severity}"><span class="warning-icon">!</span><div class="warning-text">${esc(w.text)}</div></div>`;
       }).join('')
-    : '<div class="empty-state" style="padding: 20px;">All clear.</div>';
+    : '<div class="empty-state" style="padding: 12px;">All clear.</div>';
 
-  // Todos
+  // Todos — compact, meeting-highlighted, time-aware
   const now = new Date();
-  const todosHtml = (d.todos || []).length
-    ? (d.todos || []).map(t => {
-        let dueClass = '', dueStr = '';
-        if (t.due) {
-          const due = new Date(t.due);
-          if (!isNaN(due)) {
-            dueStr = due.toLocaleDateString([], { month: 'short', day: 'numeric' });
-            const diffMs = due - now;
-            const oneDay = 86400 * 1000;
-            if (diffMs < 0) dueClass = 'todo-due-past';
-            else if (diffMs < 2 * oneDay) dueClass = 'todo-due-soon';
-          }
-        }
-        const meta = [t.status, dueStr].filter(Boolean).join(' · ');
-        return `
-          <div class="todo-card">
-            <div class="todo-checkbox" onclick="completeTodo('${esc(t.id)}')" title="Mark done"></div>
-            <div class="todo-body">
-              <div class="todo-title">${esc(t.title || '(untitled)')}</div>
-              ${meta ? `<div class="todo-meta ${dueClass}">${esc(meta)}</div>` : ''}
-            </div>
-          </div>`;
+  const todos = (d.todos || []);
+  const done = todos.filter(t => (t.status || '').toLowerCase() === 'done').length;
+  const total = todos.length;
+  const pct = total ? Math.round((done / total) * 100) : 0;
+
+  // Sort: overdue → meetings soon → today → later
+  const decorated = todos.map(t => {
+    const when = whenChip(t, now);
+    const meeting = isMeetingTitle(t.title);
+    let priority = 5;
+    if (when.cls === 'past') priority = 0;
+    else if (when.cls === 'now') priority = 1;
+    else if (when.cls === 'soon' && meeting) priority = 2;
+    else if (when.cls === 'soon') priority = 3;
+    else if (meeting) priority = 4;
+    return { t, when, meeting, priority };
+  }).sort((a, b) => a.priority - b.priority);
+
+  const todosHtml = decorated.length
+    ? decorated.map(({ t, when, meeting }) => {
+        const cls = [meeting ? 'meeting' : '', when.cls === 'past' ? 'overdue' : ''].filter(Boolean).join(' ');
+        const title = esc(shortenTitle(t.title));
+        const chip = when.label ? `<span class="todo-when ${when.cls}">${esc(when.label)}</span>` : '';
+        const openAttr = t.url ? `onclick="openTodoUrl('${esc(t.url)}')"` : '';
+        return `<div class="todo-row ${cls}" ${openAttr}>
+          <button class="todo-check" onclick="event.stopPropagation(); completeTodo('${esc(t.id)}')" title="Mark done"></button>
+          <span class="todo-text">${title}</span>
+          ${chip}
+        </div>`;
       }).join('')
     : (d.todos_error
-        ? `<div class="empty-state" style="padding: 20px;">Notion error: ${esc(d.todos_error)}</div>`
-        : '<div class="empty-state" style="padding: 20px;">No open todos in Notion.</div>');
+        ? `<div class="empty-state" style="padding: 12px;">Notion error: ${esc(d.todos_error)}</div>`
+        : '<div class="empty-state" style="padding: 12px;">Nothing on your plate.</div>');
 
-  const todosCount = (d.todos || []).length;
-
-  // Emails — placeholder for now
   const emailsMsg = d.emails.status === 'not_connected'
-    ? 'Gmail not connected. Add GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET to enable.'
+    ? 'Gmail not connected yet.'
     : d.emails.status === 'pending_integration'
-      ? 'Gmail credentials set — OAuth flow + MCP pending.'
+      ? 'Gmail key set — OAuth wiring pending.'
       : '';
 
   el.innerHTML = `
     <div class="today-section">
-      <h3 class="today-section-title">Integrations</h3>
+      <div class="today-section-title"><span>Integrations</span></div>
       <div class="integ-grid">${integsHtml}</div>
     </div>
-    <div class="today-section">
-      <h3 class="today-section-title">Warnings</h3>
+    ${(d.warnings || []).length ? `<div class="today-section">
+      <div class="today-section-title"><span>Warnings</span><span class="count">${(d.warnings||[]).length}</span></div>
       ${warningsHtml}
+    </div>` : ''}
+    <div class="today-section">
+      <div class="today-section-title"><span>Todos</span><span class="progress-text">${done}/${total}</span></div>
+      <div class="todo-progress"><div class="todo-progress-fill" style="width:${pct}%"></div></div>
+      <div class="todo-list-compact">${todosHtml}</div>
     </div>
     <div class="today-section">
-      <h3 class="today-section-title">Todos <span class="count">${todosCount}</span></h3>
-      ${todosHtml}
-    </div>
-    <div class="today-section">
-      <h3 class="today-section-title">Important emails</h3>
-      <div class="empty-state" style="padding: 20px;">${esc(emailsMsg)}</div>
+      <div class="today-section-title"><span>Emails</span></div>
+      <div class="empty-state" style="padding: 12px;">${esc(emailsMsg)}</div>
     </div>
   `;
 }
+
+function openTodoUrl(url) { try { window.open(url, '_blank'); } catch {} }
+window.openTodoUrl = openTodoUrl;
 
 async function completeTodo(id) {
   if (!id) return;

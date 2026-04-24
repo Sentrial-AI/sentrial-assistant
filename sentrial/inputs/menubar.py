@@ -385,6 +385,8 @@ def run():
                     f"window.sentrialVoiceError && "
                     f"window.sentrialVoiceError({json.dumps(err)})"
                 )
+                # Clear the dead session so the next Right-Option tap starts fresh.
+                self._voice = None
 
             try:
                 self._voice = VoiceSession(
