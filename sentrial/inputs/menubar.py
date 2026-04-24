@@ -268,14 +268,22 @@ def run():
             # to the Python method below.
             self._webview.setUIDelegate_(self)
             self._container.addSubview_(self._webview)
-            # Force a fresh fetch on first load (belt-and-suspenders with cache clear above)
+            # Force a fresh fetch on every menubar launch by appending a
+            # cache-busting ?v= query param. NSURLRequestReloadIgnoringLocalCacheData
+            # bypasses HTTP cache but the service worker sitting in front of
+            # the PWA would still serve its cache on failure; a unique URL
+            # makes the SW treat this as a brand-new request and pull from
+            # Railway. Without this, mid-session updates (my JS changes that
+            # Liam couldn't see) sit stale in the WebView until full reload.
+            import time as _t
+            bust_url = PWA_URL + ("&" if "?" in PWA_URL else "?") + "v=" + str(int(_t.time()))
             req = NSURLRequest.requestWithURL_cachePolicy_timeoutInterval_(
-                NSURL.URLWithString_(PWA_URL),
+                NSURL.URLWithString_(bust_url),
                 NSURLRequestReloadIgnoringLocalCacheData,
                 30.0,
             )
             self._webview.loadRequest_(req)
-            log.info("menubar loaded PWA → %s", PWA_URL)
+            log.info("menubar loaded PWA → %s", bust_url)
 
             # Popover wraps the container via a view controller
             self._popover_vc = NSViewController.alloc().init()
@@ -484,12 +492,25 @@ def run():
             if self._voice is None:
                 return
             self._voice = None
+            # Aura TTS (native) path — no-op for the browser-TTS path but kept
+            # here in case some future Mac-native synth comes back.
             try:
                 tts_mod.stop_playback()
             except Exception:  # noqa: BLE001
                 pass
-            self._inject_js("window.sentrialVoiceExit && window.sentrialVoiceExit()")
-            log.info("voice mode off")
+            # Browser-TTS stop: cancel speechSynthesis hard, then fire the JS
+            # hide flow. Some macOS Safari builds need a second cancel() after
+            # a short delay because the currently-speaking utterance drains
+            # its phoneme buffer and can otherwise emit 1–2 more syllables.
+            self._inject_js(
+                "(function(){"
+                "  try { window.speechSynthesis && window.speechSynthesis.cancel(); } catch (e) {}"
+                "  setTimeout(function(){ try { window.speechSynthesis && window.speechSynthesis.cancel(); } catch (e) {} }, 30);"
+                "  setTimeout(function(){ try { window.speechSynthesis && window.speechSynthesis.cancel(); } catch (e) {} }, 120);"
+                "  try { window.sentrialVoiceExit && window.sentrialVoiceExit(); } catch (e) {}"
+                "})();"
+            )
+            log.info("voice mode off — speech cancelled")
 
         def _inject_js(self, script: str) -> None:
             try:
