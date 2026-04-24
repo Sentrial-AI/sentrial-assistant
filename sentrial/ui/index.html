@@ -1059,7 +1059,8 @@
   .voice-mode {
     position: absolute; inset: 0;
     z-index: 70;
-    background: radial-gradient(ellipse at center, rgba(5,6,10,0.85) 0%, rgba(5,6,10,0.98) 70%);
+    /* Fully opaque — chat messages behind must never leak through. */
+    background: radial-gradient(ellipse at center, #0b0c12 0%, #05060a 70%);
     backdrop-filter: blur(8px);
     -webkit-backdrop-filter: blur(8px);
     display: flex; flex-direction: column;
@@ -2610,9 +2611,19 @@ pushBtn.addEventListener('click', async () => {
     source.connect(analyser);
     const timeBuf = new Uint8Array(analyser.fftSize);
 
+    // Assign voiceSession FIRST so sampleLevel() doesn't early-return on
+    // its first tick (this was the bug silencing the orb). stopLevel is
+    // patched in right after the RAF closure is defined.
     let levelRaf = 0;
+    let sampling = true;
+    voiceSession = { stream, ctx, ws, node, analyser, stopLevel: () => {
+      sampling = false;
+      if (levelRaf) cancelAnimationFrame(levelRaf);
+      levelRaf = 0;
+    }};
+
     function sampleLevel() {
-      if (!voiceSession) return;
+      if (!sampling) return;
       analyser.getByteTimeDomainData(timeBuf);
       // RMS around 128 (byte-centered zero). Normalize to [0, 1].
       let sum = 0;
@@ -2621,21 +2632,14 @@ pushBtn.addEventListener('click', async () => {
         sum += d * d;
       }
       const rms = Math.sqrt(sum / timeBuf.length) / 128; // 0..1
-      // Only push levels while we're actually listening — don't double-pulse
-      // during speaking (TTS word-boundary events own that state).
-      if (currentState === 'listening' || currentState === 'idle') {
-        // Apply a soft knee + gain so normal speech actually animates.
-        const shaped = Math.min(1, Math.pow(rms * 2.4, 0.7));
-        if (shaped > 0.05) setExternalPulse(shaped, 100);
-      }
+      // Mic level fires on every frame regardless of state — the user
+      // should see the orb react whether listening, thinking, or mid-TTS.
+      // Soft-knee + strong gain so whisper-level voice still registers.
+      const shaped = Math.min(1, Math.pow(rms * 3.2, 0.6));
+      if (shaped > 0.03) setExternalPulse(shaped, 120);
       levelRaf = requestAnimationFrame(sampleLevel);
     }
     sampleLevel();
-
-    voiceSession = { stream, ctx, ws, node, analyser, stopLevel: () => {
-      if (levelRaf) cancelAnimationFrame(levelRaf);
-      levelRaf = 0;
-    }};
   }
 
   function stopBrowserVoice() {
@@ -2661,10 +2665,11 @@ pushBtn.addEventListener('click', async () => {
     startBrowserVoice();
   };
 
-  window.sentrialVoiceUpdate = function (text) {
-    if (typeof text !== 'string' || !active) return;
-    transcript.textContent = text || '…';
-    transcript.classList.remove('response');
+  window.sentrialVoiceUpdate = function (_text) {
+    // Voice Mode is intentionally text-free. We accept interim transcripts
+    // from Deepgram but don't render them — the only visual signal during
+    // listening is the orb pulse + the state label.
+    return;
   };
 
   // Per-utterance turn (continuous + interruptible).
@@ -2815,6 +2820,23 @@ pushBtn.addEventListener('click', async () => {
     _cachedVoice = voices.find(v => v.lang && v.lang.startsWith('en')) || voices[0];
     return true;
   }
+  let _ttsPrimed = false;
+  function primeTTS() {
+    // Safari's WebKit TTS engine has meaningful first-call latency: the
+    // native TTS subsystem initializes only when the FIRST utterance is
+    // dispatched. Fire a near-silent utterance at page load so the real
+    // first speak() starts under 200ms. This runs only on a user gesture
+    // (WebKit blocks autoplay-like APIs without one), so we retry from
+    // the first pointerdown/keydown if the synchronous call is a no-op.
+    if (_ttsPrimed || !('speechSynthesis' in window)) return;
+    try {
+      const u = new SpeechSynthesisUtterance(' ');
+      u.volume = 0.01; u.rate = 1.0;
+      window.speechSynthesis.speak(u);
+      _ttsPrimed = true;
+    } catch {}
+  }
+
   if ('speechSynthesis' in window) {
     // Kick the voice list: calling getVoices() once often prompts async
     // population. voiceschanged fires when it's ready.
@@ -2822,20 +2844,33 @@ pushBtn.addEventListener('click', async () => {
     window.speechSynthesis.addEventListener('voiceschanged', _refreshVoice);
     // Try immediately in case voices are already available synchronously.
     _refreshVoice();
+    // Prime on the first user gesture (click/keydown/touch). WebKit needs
+    // a gesture for the first speak to actually go through.
+    const primeOnGesture = () => {
+      primeTTS();
+      ['pointerdown', 'keydown', 'touchstart'].forEach(ev =>
+        document.removeEventListener(ev, primeOnGesture, true));
+    };
+    ['pointerdown', 'keydown', 'touchstart'].forEach(ev =>
+      document.addEventListener(ev, primeOnGesture, true));
   }
 
   function speakBrowser(text, onDone) {
     if (!('speechSynthesis' in window)) { onDone && onDone(); return; }
-    try { window.speechSynthesis.cancel(); } catch {}
     const cleaned = stripForSpeech(text);
     if (!cleaned) { onDone && onDone(); return; }
+    // Only cancel if actually speaking — calling cancel() with an empty
+    // queue can still force a synchronous flush in Safari that adds
+    // ~300ms to the first subsequent utterance.
+    if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
+      try { window.speechSynthesis.cancel(); } catch {}
+    }
+    // Ensure engine is primed (no-op if already done).
+    primeTTS();
     const u = new SpeechSynthesisUtterance(cleaned);
     u.rate = 1.14;
     u.pitch = 1.0;
     u.volume = 1.0;
-    // Assign cached voice if ready; otherwise fire without it (don't block).
-    // Speech quality is a tiny bit worse for the first utterance before
-    // voices populate, but latency stays ~200ms.
     if (_cachedVoice) u.voice = _cachedVoice;
     else _refreshVoice();
     u.onboundary = (ev) => {
