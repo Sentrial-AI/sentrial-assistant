@@ -116,6 +116,59 @@ def forget(scope: str, key: str) -> bool:
     return deleted
 
 
+def list_conversations(limit: int = 50) -> list[dict]:
+    """Return recent conversations with a preview derived from the first user turn."""
+    con = _conn()
+    rows = con.execute(
+        "SELECT id, started_at, channel, turns_json FROM conversations "
+        "ORDER BY started_at DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    con.close()
+
+    out = []
+    for cid, started_at, channel, turns_json in rows:
+        try:
+            turns = json.loads(turns_json)
+        except (json.JSONDecodeError, TypeError):
+            turns = []
+        preview = ""
+        for t in turns:
+            if t.get("role") == "user" and t.get("content"):
+                preview = str(t["content"])[:160]
+                break
+        out.append({
+            "id": cid,
+            "started_at": started_at,
+            "channel": channel,
+            "turn_count": len(turns),
+            "preview": preview,
+        })
+    return out
+
+
+def get_conversation(conversation_id: str) -> dict | None:
+    con = _conn()
+    row = con.execute(
+        "SELECT id, started_at, ended_at, channel, turns_json FROM conversations WHERE id = ?",
+        (conversation_id,),
+    ).fetchone()
+    con.close()
+    if not row:
+        return None
+    try:
+        turns = json.loads(row[4])
+    except (json.JSONDecodeError, TypeError):
+        turns = []
+    return {
+        "id": row[0],
+        "started_at": row[1],
+        "ended_at": row[2],
+        "channel": row[3],
+        "turns": turns,
+    }
+
+
 def log_turn(conversation_id: str, channel: str, turn: dict) -> None:
     con = _conn()
     now = _now()

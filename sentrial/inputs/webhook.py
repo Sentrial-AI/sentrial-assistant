@@ -219,6 +219,19 @@ def build_app(
             },
         }
 
+    # ---- Chat history ----
+
+    @api.get("/api/conversations", dependencies=[Depends(require_auth)])
+    async def list_conversations_ep(limit: int = 50):
+        return {"conversations": memory.list_conversations(limit=limit)}
+
+    @api.get("/api/conversations/{conv_id}", dependencies=[Depends(require_auth)])
+    async def get_conversation_ep(conv_id: str):
+        conv = memory.get_conversation(conv_id)
+        if not conv:
+            raise HTTPException(status_code=404, detail="not found")
+        return conv
+
     @api.post("/api/push/subscribe", dependencies=[Depends(require_auth)])
     async def push_subscribe(sub: PushSub):
         memory.save_push_subscription(sub.endpoint, sub.keys)
@@ -282,6 +295,101 @@ def build_app(
     async def metrics_ep(window_days: int = 7):
         from sentrial.evolution import metrics as evo_metrics
         return evo_metrics.compute_metrics(window_days=window_days).to_dict()
+
+    @api.get("/api/today", dependencies=[Depends(require_auth)])
+    async def today_ep():
+        """
+        Dashboard-shaped aggregate for the Today tab: integrations status, Notion
+        todos, warnings, placeholders for emails/calendar. Server-side direct calls
+        (no LLM) for speed.
+        """
+        from sentrial.core import audit as _audit
+        from sentrial.core import secrets as _kc
+        from sentrial.evolution import proposals as _props
+
+        # ---- integrations ----
+        integrations: list[dict] = []
+        caps = [
+            ("notion",   "Notion",   "notion_api_key"),
+            ("gmail",    "Gmail",    "google_client_id"),
+            ("calendar", "Calendar", "google_client_id"),
+        ]
+        for key, label, env_key in caps:
+            present = bool(_kc.get(env_key))
+            integrations.append({
+                "key": key, "name": label,
+                "status": "active" if present else "pending_auth",
+                "detail": "Connected" if present else "Needs auth",
+            })
+
+        # ---- Notion todos (direct tool call, no LLM) ----
+        todos: list[dict] = []
+        todos_error: str | None = None
+        if _kc.get("notion_api_key") and _kc.get("notion_tasks_db_id"):
+            try:
+                from sentrial.mcps.notion.server import list_tasks as notion_list
+                res = await notion_list({"status": "open"})
+                if isinstance(res, dict) and "tasks" in res:
+                    todos = res["tasks"][:20]
+                elif isinstance(res, dict) and "error" in res:
+                    todos_error = res["error"][:200]
+            except Exception as e:  # noqa: BLE001
+                todos_error = str(e)[:200]
+
+        # ---- warnings ----
+        warnings: list[dict] = []
+        if task_runner is not None:
+            for j in task_runner.list_recent(20):
+                if j.status.value == "failed":
+                    warnings.append({
+                        "type": "job_failed",
+                        "text": f"{j.kind} job failed: {(j.error or '')[:120]}",
+                        "ref": j.id,
+                        "time": j.finished_at or j.created_at,
+                    })
+        pending_props = _props.list_all(status="pending")
+        if pending_props:
+            warnings.append({
+                "type": "proposals_pending",
+                "text": (
+                    f"{len(pending_props)} self-improvement "
+                    f"proposal{'s' if len(pending_props) > 1 else ''} awaiting review"
+                ),
+                "ref": pending_props[0]["id"] if pending_props else None,
+                "time": pending_props[0].get("created_at"),
+            })
+        error_rows = [r for r in _audit.tail(50) if r["status"] == "error"]
+        if error_rows:
+            warnings.append({
+                "type": "recent_errors",
+                "text": (
+                    f"{len(error_rows)} tool error"
+                    f"{'s' if len(error_rows) > 1 else ''} in the last 50 actions"
+                ),
+                "time": error_rows[0]["timestamp"],
+            })
+        if todos_error:
+            warnings.append({
+                "type": "integration_error",
+                "text": f"Notion query failed: {todos_error}",
+                "time": None,
+            })
+
+        # ---- email + calendar placeholders ----
+        emails = {"status": "not_connected", "items": []}
+        calendar_slot = {"status": "not_connected", "events": []}
+        if _kc.get("google_client_id") and _kc.get("google_client_secret"):
+            emails["status"] = "pending_integration"
+            calendar_slot["status"] = "pending_integration"
+
+        return {
+            "integrations": integrations,
+            "todos": todos,
+            "todos_error": todos_error,
+            "warnings": warnings,
+            "emails": emails,
+            "calendar": calendar_slot,
+        }
 
     @api.get("/api/metrics/trend", dependencies=[Depends(require_auth)])
     async def metrics_trend_ep():
