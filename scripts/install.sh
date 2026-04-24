@@ -24,7 +24,15 @@ python -m pip install -e .
 echo "-> Running first-run setup (Keychain prompts)"
 python -m sentrial.core.daemon setup
 
-# --- 3. Log dirs -----------------------------------------------------------
+# --- 3. App bundle (TCC host) ---------------------------------------------
+# Python.app's Info.plist has no NSMicrophoneUsageDescription, so mic access
+# is silently denied for anything running under python3. We wrap the menubar
+# entrypoint in a Sentrial.app bundle whose Info.plist carries the required
+# usage descriptions, and point launchd at that.
+echo "-> Building Sentrial.app bundle"
+"$here/scripts/build_app.sh"
+
+# --- 4. Log dirs -----------------------------------------------------------
 logs="$HOME/Library/Logs/Sentrial"
 mkdir -p "$logs"
 

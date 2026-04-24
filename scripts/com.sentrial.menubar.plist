@@ -5,11 +5,14 @@
     <key>Label</key>
     <string>com.sentrial.menubar</string>
 
+    <!-- Launch via the Sentrial.app bundle so macOS attributes microphone +
+         Input Monitoring permission requests to Sentrial (whose Info.plist
+         carries NSMicrophoneUsageDescription and NSInputMonitoringUsageDescription)
+         rather than to Python.app (whose signed Info.plist lacks both and
+         therefore causes silent TCC denial for the bare python3 binary). -->
     <key>ProgramArguments</key>
     <array>
-        <string>__SENTRIAL_VENV__/bin/python</string>
-        <string>-m</string>
-        <string>sentrial.inputs.menubar</string>
+        <string>__SENTRIAL_HOME__/Sentrial.app/Contents/MacOS/Sentrial</string>
     </array>
 
     <key>WorkingDirectory</key>
