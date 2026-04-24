@@ -1205,6 +1205,7 @@
       <div class="chat-controls">
         <button class="chat-ctrl-btn" id="new-chat" title="New chat (N)" aria-label="New chat" data-kb="chat:n:New">＋</button>
         <span class="chat-title" id="chat-title"></span>
+        <button class="chat-ctrl-btn" id="chat-detach" title="Pop out to a real window (P) — better for paste + dictation (Wispr Flow etc.)" aria-label="Pop out" data-kb="chat:p:Pop out">⬈</button>
         <button class="chat-ctrl-btn" id="chat-history-btn" title="History (H)" aria-label="History" data-kb="chat:h:History">☰</button>
       </div>
       <div class="chat-body" id="chat-body">
@@ -1223,7 +1224,11 @@
       <div class="chat-input-wrap">
         <div class="chat-input">
           <button class="input-mic" id="input-mic" aria-label="Voice mode" title="Voice mode (V)" data-kb="chat:v:Voice">◉</button>
-          <textarea class="input-field" id="cmd" rows="1" placeholder="Ask Sentrial anything…" autocomplete="off"></textarea>
+          <textarea class="input-field" id="cmd" rows="1" placeholder="Ask Sentrial anything…"
+                    autocomplete="off" spellcheck="true"
+                    aria-label="Message Sentrial"
+                    enterkeyhint="send"
+                    role="textbox" aria-multiline="true"></textarea>
           <button class="input-send" id="input-send" disabled aria-label="Send">→</button>
         </div>
       </div>
@@ -2269,6 +2274,24 @@ pushBtn.addEventListener('click', async () => {
 
   // Overall pulse intensity (0..1). State-driven, bumped by impulses, decays.
   let pulse = 0.35;
+  // External pulse override — when set, the globe's per-node wobble
+  // amplitude scales from this value directly (instead of the
+  // baseline-toward-pulse ease). Fed by:
+  //   • mic mid-band RMS while listening (real voice level)
+  //   • TTS word-boundary events while speaking (synthetic pulses)
+  let externalPulse = 0;
+  let externalPulseUntil = 0;
+
+  function setExternalPulse(v, ttlMs) {
+    externalPulse = Math.max(0, Math.min(1, v));
+    externalPulseUntil = performance.now() + (ttlMs || 180);
+  }
+  function clearExternalPulse() {
+    externalPulse = 0;
+    externalPulseUntil = 0;
+  }
+  window.setExternalPulse = setExternalPulse;
+  window.clearExternalPulse = clearExternalPulse;
 
   function startGlobeLoop() {
     if (rafId) return;
@@ -2301,6 +2324,15 @@ pushBtn.addEventListener('click', async () => {
                      : 0.30;
       pulse += (baseline - pulse) * 0.05;
 
+      // External pulse (real audio level, or word-boundary pulses) decays
+      // when its TTL elapses. Uses a fast linear fall-off so the orb feels
+      // responsive — we DON'T ease towards it, we track it live.
+      if (externalPulseUntil && t > externalPulseUntil) {
+        externalPulse *= 0.90;    // gentle fall
+        if (externalPulse < 0.02) externalPulse = 0;
+      }
+      const activePulse = Math.max(pulse, externalPulse);
+
       const cX = Math.cos(angX), sX = Math.sin(angX);
       const cY = Math.cos(angY), sY = Math.sin(angY);
       const cZ = Math.cos(angZ), sZ = Math.sin(angZ);
@@ -2311,8 +2343,12 @@ pushBtn.addEventListener('click', async () => {
         const v = baseVerts[i];
         const seed = nodeSeeds[i];
         // Radial wobble — pushes each vertex in/out off the unit sphere so the
-        // surface isn't a geometric ideal. Amplitude scales with pulse.
-        const wob = 1 + Math.sin(ts * seed.freq + seed.phase) * seed.amp * (0.6 + pulse);
+        // surface isn't a geometric ideal. Amplitude scales with live level:
+        // loud voice → nodes extend outward noticeably, silence → subtle
+        // breathing. The 1 + 2.4*externalPulse term is the visible kick.
+        const wob = 1 + Math.sin(ts * seed.freq + seed.phase)
+                     * seed.amp * (0.6 + activePulse)
+                     * (1 + externalPulse * 2.4);
         let x = v[0] * wob, y = v[1] * wob, z = v[2] * wob;
         // Z rotation
         let rx = x * cZ - y * sZ;
@@ -2350,7 +2386,7 @@ pushBtn.addEventListener('click', async () => {
         const el = nodeEls[i];
         el.setAttribute('cx', p[0].toFixed(1));
         el.setAttribute('cy', p[1].toFixed(1));
-        const twinkle = 1 + Math.sin(ts * seed.freq * 1.3 + seed.phase) * 0.35 * pulse;
+        const twinkle = 1 + Math.sin(ts * seed.freq * 1.3 + seed.phase) * 0.35 * activePulse;
         el.setAttribute('r', (2.0 + (p[2] + 1) * 0.9 * twinkle).toFixed(2));
         el.setAttribute('opacity', (0.42 + (p[2] + 1) * 0.28).toFixed(2));
       }
@@ -2560,13 +2596,49 @@ pushBtn.addEventListener('click', async () => {
     // echo the mic out of the speakers).
     source.connect(node);
 
-    voiceSession = { stream, ctx, ws, node };
+    // Second branch: source → analyser — for live mic-amplitude → orb
+    // reactivity. Not connected to destination either. 2048-sample FFT is
+    // plenty for RMS; we read time-domain bytes.
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 512;
+    analyser.smoothingTimeConstant = 0.6;
+    source.connect(analyser);
+    const timeBuf = new Uint8Array(analyser.fftSize);
+
+    let levelRaf = 0;
+    function sampleLevel() {
+      if (!voiceSession) return;
+      analyser.getByteTimeDomainData(timeBuf);
+      // RMS around 128 (byte-centered zero). Normalize to [0, 1].
+      let sum = 0;
+      for (let i = 0; i < timeBuf.length; i++) {
+        const d = timeBuf[i] - 128;
+        sum += d * d;
+      }
+      const rms = Math.sqrt(sum / timeBuf.length) / 128; // 0..1
+      // Only push levels while we're actually listening — don't double-pulse
+      // during speaking (TTS word-boundary events own that state).
+      if (currentState === 'listening' || currentState === 'idle') {
+        // Apply a soft knee + gain so normal speech actually animates.
+        const shaped = Math.min(1, Math.pow(rms * 2.4, 0.7));
+        if (shaped > 0.05) setExternalPulse(shaped, 100);
+      }
+      levelRaf = requestAnimationFrame(sampleLevel);
+    }
+    sampleLevel();
+
+    voiceSession = { stream, ctx, ws, node, analyser, stopLevel: () => {
+      if (levelRaf) cancelAnimationFrame(levelRaf);
+      levelRaf = 0;
+    }};
   }
 
   function stopBrowserVoice() {
     if (!voiceSession) return;
-    const { stream, ctx, ws } = voiceSession;
+    const { stream, ctx, ws, stopLevel } = voiceSession;
     voiceSession = null;
+    clearExternalPulse();
+    try { stopLevel && stopLevel(); } catch {}
     try {
       // Tell Deepgram we're done so it flushes remaining transcripts.
       if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'CloseStream' }));
@@ -2622,23 +2694,31 @@ pushBtn.addEventListener('click', async () => {
       const reply = d.reply || '(no reply)';
       pushMsg('sentrial', reply);
 
-      transcript.textContent = reply;
-      transcript.classList.add('response');
+      // Don't echo the reply under the globe — it reads robotically as the
+      // TTS catches up to the rendered text and the screen feels cluttered.
+      // Keep the chat transcript (above) as the source of truth for later
+      // review; the globe shows just state + a tiny hint.
+      transcript.textContent = '';
+      transcript.classList.remove('response');
       setState('speaking');
-      hint.textContent = 'Speak anytime to interrupt · tap Right-Option to exit';
+      hint.textContent = 'Speak anytime to interrupt';
 
+      // TTS always goes through the browser now — the old native Aura REST
+      // path took ~40s for long replies (full synth → MP3 download → afplay),
+      // vs. speechSynthesis which starts on the first word. Router logic
+      // still postNative's a voice_reply tag so native can keep Right-Option
+      // hotkey interrupts in sync, but native no longer renders audio.
       if (isNative()) {
-        postNative({ type: 'voice_reply', text: reply, seq: mySeq });
-      } else {
-        speakBrowser(reply, () => {
-          if (active && mySeq === turnSeq) {
-            setState('listening');
-            transcript.classList.remove('response');
-            transcript.textContent = '';
-            hint.textContent = "I'm listening.";
-          }
-        });
+        try { postNative({ type: 'voice_reply_started', seq: mySeq }); } catch {}
       }
+      speakBrowser(stripForSpeech(reply), () => {
+        if (active && mySeq === turnSeq) {
+          setState('listening');
+          transcript.classList.remove('response');
+          transcript.textContent = '';
+          hint.textContent = "I'm listening.";
+        }
+      });
     } catch (e) {
       if (mySeq !== turnSeq) { typingEl.remove(); return; }
       typingEl.remove();
@@ -2688,24 +2768,75 @@ pushBtn.addEventListener('click', async () => {
     });
   }
 
-  // --- Browser TTS (mobile / PWA not on Mac) ---
+  // --- Strip markdown before TTS ---
+  // Avoids the "star star" and "pound pound" artifacts when the assistant's
+  // reply contains **bold**, `code`, headers, [links](url), etc. Also
+  // collapses excessive blank lines which speechSynthesis reads as awkward
+  // long pauses.
+  function stripForSpeech(text) {
+    if (!text) return '';
+    return String(text)
+      .replace(/```[\s\S]*?```/g, '')              // drop code fences
+      .replace(/`([^`]+)`/g, '$1')                  // inline code
+      .replace(/\*\*([^*\n]+)\*\*/g, '$1')          // **bold**
+      .replace(/__([^_\n]+)__/g, '$1')              // __bold__
+      .replace(/(^|[^\w*])\*([^*\n]+)\*(?=[^\w*]|$)/g, '$1$2')  // *italic*
+      .replace(/(^|[^\w_])_([^_\n]+)_(?=[^\w_]|$)/g, '$1$2')    // _italic_
+      .replace(/^#+\s*/gm, '')                      // headers
+      .replace(/^>\s*/gm, '')                       // blockquotes
+      .replace(/\[([^\]]+)\]\([^)\s]+\)/g, '$1')    // [text](url) → text
+      .replace(/^\s*[-*]\s+/gm, '')                 // bullet list markers
+      .replace(/^\s*\d+\.\s+/gm, '')                // numbered list markers
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+  window.stripForSpeech = stripForSpeech;
+
+  // --- Pick the best available TTS voice for this platform ---
+  // macOS ships "Premium" / "Enhanced" voices under Siri Voice 1-4 +
+  // Samantha / Daniel / Karen / Moira. These sound dramatically less
+  // robotic than Apple's default 'Fred' / 'Alex'. Pick the first match.
+  function pickVoice() {
+    const voices = (window.speechSynthesis && window.speechSynthesis.getVoices) ? window.speechSynthesis.getVoices() : [];
+    if (!voices.length) return null;
+    const byQuality = [
+      /siri/i, /samantha.*premium|samantha.*enhanced/i, /daniel.*premium|daniel.*enhanced/i,
+      /samantha/i, /daniel/i, /karen/i, /moira/i, /aaron/i,
+      /(en[-_](us|gb|ie)).*premium/i, /(en[-_](us|gb|ie)).*enhanced/i,
+    ];
+    for (const re of byQuality) {
+      const hit = voices.find(v => re.test(v.name + ' ' + (v.lang || '')));
+      if (hit) return hit;
+    }
+    return voices.find(v => v.lang && v.lang.startsWith('en')) || voices[0];
+  }
+
   function speakBrowser(text, onDone) {
     if (!('speechSynthesis' in window)) { onDone && onDone(); return; }
     try { window.speechSynthesis.cancel(); } catch {}
-    const u = new SpeechSynthesisUtterance(text);
-    u.rate = 1.02; u.pitch = 1.0; u.volume = 1.0;
-    const voices = window.speechSynthesis.getVoices() || [];
-    // Prefer a British/American male if available; fall back to default.
-    const preferred = voices.find(v => /daniel/i.test(v.name)) ||
-                      voices.find(v => /(british|uk).*(male)?/i.test(v.name + ' ' + v.lang)) ||
-                      voices.find(v => v.lang && v.lang.startsWith('en'));
-    if (preferred) u.voice = preferred;
-    u.onend = () => onDone && onDone();
-    u.onerror = () => onDone && onDone();
+    const cleaned = stripForSpeech(text);
+    if (!cleaned) { onDone && onDone(); return; }
+    const u = new SpeechSynthesisUtterance(cleaned);
+    u.rate = 1.12;   // Bump rate a touch — default is sluggish.
+    u.pitch = 1.0;
+    u.volume = 1.0;
+    const v = pickVoice();
+    if (v) u.voice = v;
+    // Pulse the globe on every word boundary so speaking is visually active
+    // even though the Web Speech API doesn't expose audio frame data.
+    u.onboundary = (ev) => {
+      if (ev.name === 'word') {
+        setExternalPulse(0.7 + Math.random() * 0.3);
+      }
+    };
+    u.onend = () => { clearExternalPulse(); onDone && onDone(); };
+    u.onerror = () => { clearExternalPulse(); onDone && onDone(); };
     window.speechSynthesis.speak(u);
   }
   function stopSpeakingIfAny() {
     try { if ('speechSynthesis' in window) window.speechSynthesis.cancel(); } catch {}
+    clearExternalPulse();
   }
 
   // --- Mobile voice (webkitSpeechRecognition) ---
@@ -2840,6 +2971,20 @@ function startNewChat() {
   document.getElementById('chat-title').textContent = '';
   cmd.focus();
 }
+
+// "Pop out" — ask the native menubar to detach the popover into a proper
+// floating NSPanel. The panel is a real addressable window that macOS
+// Accessibility (and dictation tools like Wispr Flow) treat as a first-
+// class text-entry surface; popovers are transient and often skipped.
+// Hidden gracefully when we're not running inside the native shell.
+(function setupDetach() {
+  const btn = document.getElementById('chat-detach');
+  if (!btn) return;
+  if (!isNative()) { btn.hidden = true; return; }
+  btn.addEventListener('click', () => {
+    postNative({ type: 'detach' });
+  });
+})();
 
 document.getElementById('chat-history-btn').addEventListener('click', openHistory);
 document.getElementById('history-close').addEventListener('click', closeHistory);

@@ -123,6 +123,7 @@ def run():
 
     NSApplicationActivationPolicyAccessory = 1
     NSPopoverBehaviorTransient = 1
+    NSPopoverBehaviorSemitransient = 2
     NSRectEdgeMinY = 1
     NSViewWidthSizable = 2
     NSViewHeightSizable = 16
@@ -212,6 +213,11 @@ def run():
                 # Dev console so we can right-click → Inspect Element when
                 # something in the PWA is silently broken.
                 ("developerExtrasEnabled", True),
+                # Clipboard: let JS read/write so navigator.clipboard works
+                # AND keyboard paste into inputs is unblocked. These private
+                # prefs are what Safari itself uses.
+                ("javaScriptCanAccessClipboard", True),
+                ("DOMPasteAllowed", True),
             ):
                 try:
                     prefs.setValue_forKey_(val, key)
@@ -275,7 +281,13 @@ def run():
             self._popover_vc = NSViewController.alloc().init()
             self._popover_vc.setView_(self._container)
             self._popover = NSPopover.alloc().init()
-            self._popover.setBehavior_(NSPopoverBehaviorTransient)
+            # Semitransient (not Transient): popover survives when focus
+            # moves to another app (e.g. Wispr Flow grabbing focus to
+            # dictate, or the user briefly clicking into Safari to copy
+            # something). Transient mode dismissed the popover the moment
+            # another app took focus — unusable for any paste / dictate
+            # workflow.
+            self._popover.setBehavior_(NSPopoverBehaviorSemitransient)
             self._popover.setContentSize_((POPOVER_W, POPOVER_H))
             self._popover.setContentViewController_(self._popover_vc)
 
@@ -574,6 +586,13 @@ def run():
                 # Mic button inside the popover — same effect as tapping Right-Option
                 if self._voice is None:
                     self._voice_start()
+            elif kind == "detach":
+                # PWA "Pop out" button asked to be upgraded from popover to
+                # floating panel — panels are proper windows that macOS AX
+                # surfaces to Wispr Flow / Dictation etc., and they don't
+                # dismiss when the user tabs to another app.
+                if not self._detached:
+                    self._detach()
 
         def _speak_blocking(self, text: str, api_key: str | None, voice: str) -> None:
             """Runs off-main-thread. Announces state transitions to the PWA orb."""
