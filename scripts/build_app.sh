@@ -47,15 +47,35 @@ cat > "$app/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# Compile the native mic capture helper. Must live inside the bundle so TCC
-# attributes microphone access to Sentrial.app (whose Info.plist carries the
-# NSMicrophoneUsageDescription above) rather than to Python.app.
+# Compile the native mic capture helper with an embedded Info.plist (in the
+# Mach-O __TEXT,__info_plist section). Without this, the binary has no mic
+# usage description for macOS to display when it would prompt, so TCC
+# auto-denies without showing a dialog.
 if [[ -f "$here/native/sentrial-mic.swift" ]]; then
-    echo "-> Compiling native/sentrial-mic.swift"
+    echo "-> Compiling native/sentrial-mic.swift (with embedded Info.plist)"
+    helper_plist="$(mktemp -t sentrial-mic-info.XXXXXX.plist)"
+    cat > "$helper_plist" <<HPLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key> <string>com.sentrial.mic</string>
+    <key>CFBundleName</key>       <string>Sentrial</string>
+    <key>CFBundleExecutable</key> <string>sentrial-mic</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Sentrial uses the microphone for Voice Mode so you can speak with the assistant.</string>
+</dict>
+</plist>
+HPLIST
     swiftc -O -target arm64-apple-macos11 \
         "$here/native/sentrial-mic.swift" \
         -o "$app/Contents/MacOS/sentrial-mic" \
-        -framework AVFoundation -framework Foundation
+        -framework AVFoundation -framework Foundation \
+        -Xlinker -sectcreate \
+        -Xlinker __TEXT \
+        -Xlinker __info_plist \
+        -Xlinker "$helper_plist"
+    rm -f "$helper_plist"
 else
     echo "-> WARNING: native/sentrial-mic.swift missing — Voice Mode mic will fail"
 fi
