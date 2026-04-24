@@ -574,6 +574,24 @@
   }
   .modal-card input:focus { border-color: var(--accent); }
   .modal-card button { width: 100%; }
+  /* Setup modal: input + Paste + Reveal in one row. Override the
+     global modal-card button width so the two small buttons don't
+     stretch across. */
+  .setup-row {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    gap: 8px; margin-bottom: 12px;
+  }
+  .setup-row input { margin-bottom: 0; }
+  .setup-row .btn-secondary {
+    width: auto; padding: 0 14px; white-space: nowrap;
+  }
+  .setup-row .setup-reveal { width: 42px; padding: 0; font-size: 16px; }
+  @keyframes setup-pulse {
+    0%   { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(94,234,212,0.22); }
+    100% { border-color: var(--border); box-shadow: none; }
+  }
+  .setup-pulse { animation: setup-pulse 0.4s ease-out; }
   .modal-card code { font-family: var(--mono); font-size: 12px; background: var(--elevated); padding: 2px 6px; border-radius: 4px; }
   .modal-err { color: var(--danger); font-size: 13px; margin: 0 0 8px; }
 
@@ -1326,8 +1344,17 @@
 <div class="modal" id="setup-modal" hidden>
   <div class="modal-card">
     <h2>Pair this device</h2>
-    <p>Enter your <code>SENTRIAL_TOKEN</code> (from Railway env vars).</p>
-    <input type="password" id="setup-token" placeholder="SENTRIAL_TOKEN" autocomplete="off">
+    <p>Paste your <code>SENTRIAL_TOKEN</code> (from Railway env vars).</p>
+    <div class="setup-row">
+      <input type="text" id="setup-token" placeholder="SENTRIAL_TOKEN"
+             autocomplete="off" autocapitalize="off" autocorrect="off"
+             spellcheck="false"
+             style="-webkit-text-security: disc; letter-spacing: 0.04em;">
+      <button class="btn-secondary setup-paste" id="setup-paste"
+              title="Paste from clipboard">Paste</button>
+      <button class="btn-secondary setup-reveal" id="setup-reveal"
+              title="Show/hide" aria-label="Show/hide">👁</button>
+    </div>
     <p class="modal-err" id="setup-err" style="display:none"></p>
     <button class="btn-primary" id="setup-save">Pair</button>
   </div>
@@ -1502,6 +1529,44 @@ document.getElementById('setup-save').addEventListener('click', async () => {
     else showSetup('Bad token');
   } catch { /* showSetup called already */ }
 });
+
+// Paste button: explicit clipboard.readText so the user doesn't rely on
+// keyboard paste working inside a WKWebView password-like field.
+document.getElementById('setup-paste').addEventListener('click', async (e) => {
+  e.preventDefault();
+  const input = document.getElementById('setup-token');
+  try {
+    const txt = await navigator.clipboard.readText();
+    if (txt) {
+      input.value = txt.trim();
+      input.focus();
+      // Flash the border briefly so the user sees it took.
+      input.classList.add('setup-pulse');
+      setTimeout(() => input.classList.remove('setup-pulse'), 400);
+    }
+  } catch (err) {
+    // Safari sometimes throws NotAllowedError without explicit user gesture;
+    // fall back to nudging the user to right-click → paste.
+    const errEl = document.getElementById('setup-err');
+    errEl.textContent = 'Clipboard read denied — tap the field and paste manually (⌘V).';
+    errEl.style.display = 'block';
+    input.focus();
+  }
+});
+
+// Reveal/hide toggle for the token.
+(function () {
+  const input = document.getElementById('setup-token');
+  const btn = document.getElementById('setup-reveal');
+  let revealed = false;
+  btn.addEventListener('click', (e) => {
+    e.preventDefault();
+    revealed = !revealed;
+    input.style.webkitTextSecurity = revealed ? 'none' : 'disc';
+    btn.textContent = revealed ? '🚫' : '👁';
+    btn.setAttribute('aria-label', revealed ? 'Hide token' : 'Show token');
+  });
+})();
 
 document.getElementById('logout').addEventListener('click', () => {
   localStorage.removeItem(TOKEN_KEY);
