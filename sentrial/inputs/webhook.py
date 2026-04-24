@@ -283,6 +283,34 @@ def build_app(
         from sentrial.evolution import metrics as evo_metrics
         return evo_metrics.compute_metrics(window_days=window_days).to_dict()
 
+    @api.get("/api/metrics/trend", dependencies=[Depends(require_auth)])
+    async def metrics_trend_ep():
+        """Compare current 7d metrics vs previous 7d to surface direction of change."""
+        from sentrial.evolution import metrics as evo_metrics
+        cur = evo_metrics.compute_metrics(window_days=7).to_dict()
+        prev_14 = evo_metrics.compute_metrics(window_days=14).to_dict()
+        # "Previous 7d" ~= 14d - 7d. Rough but directional.
+        LOWER_BETTER = {"edit_rate", "tool_denial_rate", "clarification_rate", "avg_latency_s"}
+        HIGHER_BETTER = {"scope_preview_acceptance"}
+        deltas = {}
+        for k in list(LOWER_BETTER) + list(HIGHER_BETTER):
+            c = cur.get(k)
+            p = prev_14.get(k)
+            if c is None or p is None:
+                continue
+            # Directional improvement: positive means getting better
+            if k in LOWER_BETTER:
+                improvement = (p - c)
+            else:
+                improvement = (c - p)
+            deltas[k] = {
+                "current": c,
+                "previous": p,
+                "improvement": round(improvement, 4),
+                "better_direction": "lower" if k in LOWER_BETTER else "higher",
+            }
+        return {"current": cur, "previous_14d_avg": prev_14, "deltas": deltas}
+
     return api
 
 

@@ -124,6 +124,13 @@ def approve(proposal_id: str) -> dict:
     if d.get("status") != "pending":
         raise ValueError(f"proposal {proposal_id} is {d.get('status')}, not pending")
 
+    # Snapshot metrics at apply time so we can measure realized impact later.
+    try:
+        from sentrial.evolution import metrics
+        d["metrics_at_apply"] = metrics.compute_metrics(window_days=7).to_dict()
+    except Exception:  # noqa: BLE001
+        d["metrics_at_apply"] = None
+
     target_path = Path(d["target"])
     if not target_path.is_absolute():
         # Resolve relative to repo root (one up from sentrial/)

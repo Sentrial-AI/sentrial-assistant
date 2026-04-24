@@ -468,6 +468,47 @@
   .proposal-diff .d-add { color: var(--success); }
   .proposal-diff .d-rem { color: var(--danger); }
   .proposal-diff .d-hdr { color: var(--text-3); }
+
+  .trend-summary {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 14px; padding: 14px 16px;
+    margin-bottom: 12px;
+  }
+  .trend-head {
+    font-size: 12px; color: var(--text-2);
+    letter-spacing: 0.04em; text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+  .trend-head-big {
+    font-size: 22px; font-weight: 500; letter-spacing: -0.02em;
+    color: var(--text); margin-bottom: 4px;
+  }
+  .trend-head-big.up { color: var(--success); }
+  .trend-head-big.down { color: var(--warn); }
+  .trend-head-sub { font-size: 13px; color: var(--text-2); }
+  .trend-deltas {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 10px; margin-top: 14px;
+  }
+  .trend-delta {
+    background: var(--elevated); border-radius: 8px;
+    padding: 10px 12px;
+  }
+  .trend-delta-label {
+    font-size: 11px; color: var(--text-3);
+    letter-spacing: 0.04em; text-transform: uppercase;
+    margin-bottom: 2px;
+  }
+  .trend-delta-row {
+    display: flex; align-items: baseline; gap: 6px;
+  }
+  .trend-delta-value { font-family: var(--mono); font-size: 16px; color: var(--text); }
+  .trend-delta-arrow {
+    font-size: 12px; font-family: var(--mono);
+  }
+  .trend-delta-arrow.up { color: var(--success); }
+  .trend-delta-arrow.down { color: var(--warn); }
+  .trend-delta-arrow.flat { color: var(--text-3); }
 </style>
 </head>
 <body>
@@ -552,6 +593,7 @@
         <button class="btn-secondary" id="run-evolution" style="font-size: 13px; padding: 8px 14px;">Scan for improvements</button>
       </div>
       <div class="settings-body">
+        <div class="trend-summary" id="trend-summary"></div>
         <div class="metrics-strip" id="metrics-strip"></div>
         <h3 style="margin: 24px 0 10px; font-size: 13px; font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-3);">Pending proposals</h3>
         <div id="proposals-list"></div>
@@ -796,11 +838,24 @@ const cmd = document.getElementById('cmd');
 const sendBtn = document.getElementById('input-send');
 const transcriptEl = document.getElementById('chat-transcript');
 const emptyEl = document.getElementById('chat-empty');
+const chatBodyEl = document.getElementById('chat-body');
 
 cmd.addEventListener('input', () => {
   cmd.style.height = 'auto';
   cmd.style.height = Math.min(cmd.scrollHeight, 160) + 'px';
   sendBtn.disabled = !cmd.value.trim();
+});
+
+// iOS keyboard dismiss — tap on the scroll area (not the input) blurs the field.
+chatBodyEl.addEventListener('touchstart', (e) => {
+  if (!e.target.closest('.chat-input') && document.activeElement === cmd) {
+    cmd.blur();
+  }
+}, { passive: true });
+
+// Desktop: Esc blurs the input too.
+cmd.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { cmd.blur(); }
 });
 cmd.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) {
@@ -1108,6 +1163,71 @@ async function loadMetrics() {
     const m = await r.json();
     renderMetricsStrip(m);
   } catch {}
+  try {
+    const r2 = await api('GET', '/api/metrics/trend');
+    if (!r2.ok) return;
+    const t = await r2.json();
+    renderTrendSummary(t);
+  } catch {}
+}
+
+function renderTrendSummary(t) {
+  const el = document.getElementById('trend-summary');
+  if (!el || !t || !t.deltas) { el && (el.innerHTML = ''); return; }
+  const labels = {
+    edit_rate: 'Less backtalk',
+    tool_denial_rate: 'Fewer denials',
+    clarification_rate: 'Fewer clarifies',
+    avg_latency_s: 'Faster replies',
+    scope_preview_acceptance: 'Approvals on first try',
+  };
+  const fmt = {
+    edit_rate: v => (v * 100).toFixed(1) + '%',
+    tool_denial_rate: v => (v * 100).toFixed(1) + '%',
+    clarification_rate: v => (v * 100).toFixed(1) + '%',
+    avg_latency_s: v => v.toFixed(1) + 's',
+    scope_preview_acceptance: v => (v * 100).toFixed(0) + '%',
+  };
+  const improvements = Object.entries(t.deltas);
+  // Net: count how many metrics improved vs regressed
+  let better = 0, worse = 0;
+  for (const [, d] of improvements) {
+    if (d.improvement > 0.005) better++;
+    else if (d.improvement < -0.005) worse++;
+  }
+  const nothingYet = improvements.every(([, d]) => d.current === 0 && d.previous === 0);
+  let headline, headClass;
+  if (nothingYet) {
+    headline = 'Not enough data yet';
+    headClass = '';
+  } else if (better > worse) {
+    headline = `${better} metric${better === 1 ? '' : 's'} improved this week`;
+    headClass = 'up';
+  } else if (worse > better) {
+    headline = `${worse} metric${worse === 1 ? '' : 's'} regressed this week`;
+    headClass = 'down';
+  } else {
+    headline = 'Holding steady';
+    headClass = '';
+  }
+  const deltasHtml = improvements.map(([k, d]) => {
+    const dir = d.improvement > 0.005 ? 'up' : d.improvement < -0.005 ? 'down' : 'flat';
+    const arrow = dir === 'up' ? '↑' : dir === 'down' ? '↓' : '·';
+    const fn = fmt[k] || (v => String(v));
+    return `
+      <div class="trend-delta">
+        <div class="trend-delta-label">${esc(labels[k] || k)}</div>
+        <div class="trend-delta-row">
+          <span class="trend-delta-value">${fn(d.current)}</span>
+          <span class="trend-delta-arrow ${dir}">${arrow} vs ${fn(d.previous)}</span>
+        </div>
+      </div>`;
+  }).join('');
+  el.innerHTML = `
+    <div class="trend-head">How I'm doing</div>
+    <div class="trend-head-big ${headClass}">${esc(headline)}</div>
+    <div class="trend-head-sub">Rolling 7-day window vs prior 14-day average.</div>
+    <div class="trend-deltas">${deltasHtml}</div>`;
 }
 
 async function approveProposal(id) {

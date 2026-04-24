@@ -47,7 +47,7 @@ function makeWidget(state) {
   h.addSpacer();
   const clock = h.addText(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
   clock.textColor = DIM;
-  clock.font = Font.monospacedSystemFont(10);
+  clock.font = Font.regularMonospacedSystemFont(10);
 
   w.addSpacer(10);
 
@@ -74,7 +74,7 @@ function makeWidget(state) {
   c1.setPadding(8, 10, 8, 10);
   const l1 = c1.addText("PENDING");
   l1.textColor = DIM;
-  l1.font = Font.monospacedSystemFont(9);
+  l1.font = Font.regularMonospacedSystemFont(9);
   const v1 = c1.addText(String(pending));
   v1.textColor = pending > 0 ? AMBER : TEXT;
   v1.font = Font.semiboldSystemFont(22);
@@ -87,7 +87,7 @@ function makeWidget(state) {
   c2.setPadding(8, 10, 8, 10);
   const l2 = c2.addText("RUNNING");
   l2.textColor = DIM;
-  l2.font = Font.monospacedSystemFont(9);
+  l2.font = Font.regularMonospacedSystemFont(9);
   const v2 = c2.addText(String(running));
   v2.textColor = running > 0 ? ACCENT : TEXT;
   v2.font = Font.semiboldSystemFont(22);
@@ -99,11 +99,11 @@ function makeWidget(state) {
     const latest = state.audit[0];
     const a = w.addText(latest.action || "");
     a.textColor = TEXT;
-    a.font = Font.monospacedSystemFont(10);
+    a.font = Font.regularMonospacedSystemFont(10);
     a.lineLimit = 2;
     const t = w.addText((latest.timestamp || "").slice(11, 19));
     t.textColor = DIM;
-    t.font = Font.monospacedSystemFont(9);
+    t.font = Font.regularMonospacedSystemFont(9);
   }
 
   return w;
