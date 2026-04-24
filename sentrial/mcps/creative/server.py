@@ -316,6 +316,7 @@ TOOLS = [
 def register(registry: Registry, task_runner: TaskRunner) -> None:
     global _runner
     _runner = task_runner
+    registry.add_group("creative")
     for t in TOOLS:
         registry.add(t)
     task_runner.register_executor("proposal", execute_proposal)

@@ -89,11 +89,20 @@ def recall_scope(scope: str) -> dict[str, Any]:
     return {k: json.loads(v) for k, v in rows}
 
 
+# Scopes that must never appear in the UI memory pane. These carry raw
+# credentials (OAuth tokens, API keys) and are read-only internals — not
+# something the user is supposed to review or edit through the pins list.
+_REDACTED_SCOPES = {"oauth"}
+
+
 def list_pins() -> list[dict]:
-    """Return all facts as pin-like objects for the UI."""
+    """Return all facts as pin-like objects for the UI. Excludes sensitive scopes."""
     con = _conn()
     rows = con.execute(
-        "SELECT scope, key, value_json, updated_at FROM facts ORDER BY updated_at DESC"
+        "SELECT scope, key, value_json, updated_at FROM facts"
+        " WHERE scope NOT IN (" + ",".join("?" * len(_REDACTED_SCOPES)) + ")"
+        " ORDER BY updated_at DESC",
+        tuple(_REDACTED_SCOPES),
     ).fetchall()
     con.close()
     out = []

@@ -350,5 +350,8 @@ TOOLS = [
 
 
 def register(registry: Registry, task_runner: TaskRunner) -> None:
+    from sentrial.core import google_oauth
+    status = "active" if google_oauth.is_connected() else "pending_auth"
+    registry.add_group("calendar", status=status)
     for t in TOOLS:
         registry.add(t)

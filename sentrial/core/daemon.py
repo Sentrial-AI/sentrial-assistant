@@ -85,19 +85,21 @@ async def _main(host: str | None, port: int | None) -> None:
     scheduling_server.register(registry, task_runner)
     log.info("loaded: scheduling MCP (plan_day + cross-platform reminders)")
 
-    # Gmail + Calendar are OAuth-gated: only register when we have a stored
-    # Google token. Otherwise every tool call would fail with 'not connected'
-    # and the agent would see a dozen dead tools in its catalog.
+    # Gmail + Calendar register unconditionally. Each tool checks
+    # google_oauth.ensure_access_token() at call time and returns a clear
+    # 'reconnect' error if the user hasn't authorized yet. This way a mid-
+    # session OAuth completion takes effect immediately, without needing
+    # a daemon restart (important for SaaS — new users connect AFTER
+    # their process is already up).
     try:
+        from sentrial.mcps.gmail import server as gmail_server
+        from sentrial.mcps.calendar import server as calendar_server
+        gmail_server.register(registry, task_runner)
+        calendar_server.register(registry, task_runner)
         from sentrial.core import google_oauth
-        if google_oauth.is_connected():
-            from sentrial.mcps.gmail import server as gmail_server
-            from sentrial.mcps.calendar import server as calendar_server
-            gmail_server.register(registry, task_runner)
-            calendar_server.register(registry, task_runner)
-            log.info("loaded: gmail + calendar MCPs (google oauth connected)")
-        else:
-            log.info("skipped: gmail + calendar MCPs (google oauth not connected)")
+        connected = google_oauth.is_connected()
+        log.info("loaded: gmail + calendar MCPs (google oauth %s)",
+                 "connected" if connected else "pending — tools will fail until user authorizes")
     except Exception as e:  # noqa: BLE001
         log.warning("gmail/calendar load failed: %s", e)
 

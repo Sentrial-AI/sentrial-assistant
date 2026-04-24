@@ -203,22 +203,22 @@ def build_app(
                 })
 
         mcps_out: list[dict] = []
-        if registry is not None and hasattr(registry, "tools"):
-            # Group by module prefix if present
-            names_seen: set[str] = set()
-            for t in registry.tools:
-                name = t.get("name", "")
-                prefix = name.split("_", 1)[0]
-                if prefix in names_seen:
-                    continue
-                names_seen.add(prefix)
-            # Flat list of capability groups: hardcoded for now since we know what's loaded
-            for cap in ("notion", "creative", "gmail", "calendar", "sentrial_pipeline"):
-                cap_tools = [t for t in registry.tools if cap in t.get("name", "")]
-                if cap_tools:
-                    mcps_out.append({"name": cap, "status": "active", "tools": len(cap_tools)})
-                else:
-                    mcps_out.append({"name": cap, "status": "disabled", "tools": 0})
+        if registry is not None:
+            # Prefer the registry's own grouping (Tool.group + add_group()).
+            # Falls back to an empty list only if someone is running an older
+            # registry shape.
+            if hasattr(registry, "groups"):
+                # Refresh the google-backed groups' status against live auth
+                # state so mid-session OAuth connects flip them to 'active'.
+                try:
+                    from sentrial.core import google_oauth
+                    google_status = "active" if google_oauth.is_connected() else "pending_auth"
+                    for g in ("gmail", "calendar"):
+                        if g in registry._status:  # noqa: SLF001
+                            registry.set_status(g, google_status)
+                except Exception:  # noqa: BLE001
+                    pass
+                mcps_out = registry.groups()
 
         return {
             "jobs": jobs_out,

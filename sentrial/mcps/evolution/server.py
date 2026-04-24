@@ -131,5 +131,6 @@ TOOLS = [
 
 
 def register(registry: Registry, task_runner: TaskRunner) -> None:
+    registry.add_group("evolution")
     for t in TOOLS:
         registry.add(t)

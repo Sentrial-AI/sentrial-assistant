@@ -678,5 +678,6 @@ TOOLS = [
 
 
 def register(registry: Registry, task_runner: TaskRunner) -> None:
+    registry.add_group("notion")
     for t in TOOLS:
         registry.add(t)

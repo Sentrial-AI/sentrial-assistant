@@ -425,5 +425,10 @@ TOOLS = [
 
 
 def register(registry: Registry, task_runner: TaskRunner) -> None:
+    # Gmail is always registered; tool impls check google_oauth.is_connected()
+    # at call time and return a clear error if not yet authorized.
+    from sentrial.core import google_oauth
+    status = "active" if google_oauth.is_connected() else "pending_auth"
+    registry.add_group("gmail", status=status)
     for t in TOOLS:
         registry.add(t)
