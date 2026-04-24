@@ -419,10 +419,17 @@
     color: var(--text-3);
   }
   .tabs-bottom .tab-btn.active { color: var(--accent); background: transparent; }
+  /* Active pill-chip lives on the icon, iOS-style. The whole tab doesn't go
+     filled because flex:1 makes it span the column and that looks heavy. */
   .tabs-bottom .tab-icon {
-    width: 22px; height: 22px;
+    width: 44px; height: 24px;
     display: grid; place-items: center;
     font-family: var(--mono); font-size: 13px;
+    border-radius: 999px;
+    transition: background 0.15s ease;
+  }
+  .tabs-bottom .tab-btn.active .tab-icon {
+    background: var(--accent-muted);
   }
 
   /* ---------- MODAL ---------- */
@@ -466,6 +473,8 @@
     font-size: 10px; font-weight: 600;
     font-family: var(--mono);
   }
+  /* `hidden` alone loses specificity to `.nav-badge` — must be explicit. */
+  .nav-badge[hidden] { display: none; }
   .metrics-strip {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));

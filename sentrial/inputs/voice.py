@@ -87,7 +87,10 @@ class VoiceSession:
     def _run(self) -> None:
         _ensure_ssl_certs()
 
-        # websockets + sounddevice are hard requirements; fail fast if missing.
+        # websockets is a hard requirement; sounddevice is no longer used — we
+        # capture mic via the native Swift helper bundled in Sentrial.app, which
+        # lives at the path in SENTRIAL_MIC_HELPER and emits 16 kHz mono int16
+        # PCM on its stdout.
         try:
             import websockets.sync.client as ws_client
         except ImportError as e:
@@ -95,12 +98,13 @@ class VoiceSession:
             self._on_error("websockets missing — pip install websockets")
             return
 
-        try:
-            import sounddevice as sd
-        except ImportError as e:
-            log.warning("sounddevice not installed: %s", e)
+        import os as _os
+        import subprocess as _sp
+        helper = _os.environ.get("SENTRIAL_MIC_HELPER")
+        if not helper or not _os.path.exists(helper):
+            log.warning("SENTRIAL_MIC_HELPER missing: %r", helper)
             self._on_error(
-                "sounddevice missing — run: ./.venv/bin/pip install sounddevice"
+                "Mic helper missing — rebuild Sentrial.app: ./scripts/build_app.sh"
             )
             return
 
@@ -180,18 +184,56 @@ class VoiceSession:
                 recv_thread = threading.Thread(target=recv_loop, daemon=True)
                 recv_thread.start()
 
+                # Spawn the Swift mic helper. Its stdout is 16 kHz mono int16
+                # PCM, read in BLOCK_SIZE*2-byte chunks (50 ms at 16 kHz).
+                chunk_bytes = BLOCK_SIZE * 2
+                try:
+                    proc = _sp.Popen(
+                        [helper],
+                        stdin=_sp.PIPE,
+                        stdout=_sp.PIPE,
+                        stderr=_sp.PIPE,
+                        bufsize=0,
+                    )
+                except OSError as spawn_err:
+                    log.warning("mic helper spawn failed: %s", spawn_err)
+                    self._on_error(f"mic helper failed: {spawn_err}")
+                    return
+
+                # Drain stderr in a thread so its pipe buffer doesn't block.
+                def stderr_loop():
+                    try:
+                        for line in proc.stderr:  # type: ignore[union-attr]
+                            text = line.decode("utf-8", "replace").rstrip()
+                            if text:
+                                log.warning("sentrial-mic: %s", text)
+                    except Exception:  # noqa: BLE001
+                        pass
+                threading.Thread(target=stderr_loop, daemon=True).start()
+
                 chunk_count = [0]
 
-                def audio_cb(indata, _frames, _time, status) -> None:
-                    if status:
-                        log.debug("mic status: %s", status)
-                    if self._stop.is_set():
-                        raise sd.CallbackStop
-                    try:
-                        buf = bytes(indata)
-                        ws.send(buf)
+                try:
+                    while not self._stop.is_set():
+                        if proc.stdout is None:
+                            break
+                        buf = proc.stdout.read(chunk_bytes)
+                        if not buf:
+                            # Helper exited early — permission denied or engine crash.
+                            rc = proc.poll()
+                            log.warning("mic helper exited (rc=%s) before stop", rc)
+                            if rc == 2:
+                                self._on_error(
+                                    "Microphone permission denied — grant access to Sentrial "
+                                    "in System Settings → Privacy → Microphone"
+                                )
+                            break
+                        try:
+                            ws.send(buf)
+                        except Exception as send_err:  # noqa: BLE001
+                            log.warning("deepgram send failed: %s", send_err)
+                            break
                         bytes_sent[0] += len(buf)
-                        # Max abs sample in this 50ms chunk. int16 little-endian.
                         peak = 0
                         for i in range(0, len(buf), 2):
                             s = buf[i] | (buf[i+1] << 8)
@@ -200,30 +242,29 @@ class VoiceSession:
                             a = -s if s < 0 else s
                             if a > peak:
                                 peak = a
-                        if peak > 200:  # ~noise floor
+                        if peak > 200:
                             nonzero_bytes_sent[0] += len(buf)
                         chunk_count[0] += 1
-                        # Every ~2s (40 chunks at 50ms each) surface a heartbeat so we
-                        # can tell mic vs WS vs Deepgram when voice is dead silent.
                         if chunk_count[0] % 40 == 0:
                             log.info(
-                                "voice heartbeat: sent=%dB audio_chunks=%d peak=%d frames_received=%d",
+                                "voice heartbeat: sent=%dB chunks=%d peak=%d frames_received=%d",
                                 bytes_sent[0], chunk_count[0], peak, msg_count[0],
                             )
-                    except Exception as send_err:  # noqa: BLE001
-                        log.warning("deepgram send failed: %s", send_err)
-
-                # RawInputStream avoids sounddevice's numpy dependency by handing
-                # us a plain CFFI buffer instead of an ndarray.
-                with sd.RawInputStream(
-                    samplerate=SAMPLE_RATE,
-                    channels=CHANNELS,
-                    dtype=DTYPE,
-                    blocksize=BLOCK_SIZE,
-                    callback=audio_cb,
-                ):
-                    while not self._stop.wait(0.05):
+                finally:
+                    # Close stdin to signal shutdown, then terminate if needed.
+                    try:
+                        if proc.stdin:
+                            proc.stdin.close()
+                    except Exception:  # noqa: BLE001
                         pass
+                    try:
+                        proc.wait(timeout=1.0)
+                    except _sp.TimeoutExpired:
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=1.0)
+                        except _sp.TimeoutExpired:
+                            proc.kill()
 
                 # Tell Deepgram we're done so it flushes remaining transcripts.
                 try:
