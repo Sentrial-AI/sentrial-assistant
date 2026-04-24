@@ -26,8 +26,14 @@ log = logging.getLogger(__name__)
 
 SYSTEM_PROMPT_PATH = Path(__file__).parent.parent / "config" / "system_prompt.md"
 DEFAULT_MODEL = "claude-opus-4-6"
+# Voice turns route to Haiku 4.5 — dramatically lower time-to-first-token.
+# The pre-turn retrieval preamble injects schedule / calendar / profile /
+# lessons so Haiku has enough context to answer most voice questions
+# without reaching for tools.
+VOICE_MODEL = "claude-haiku-4-5-20251001"
+VOICE_MAX_TOKENS = 512          # voice replies should be short; caps latency
 DEFAULT_MAX_TOKENS = 4096
-MAX_TOOL_ITERATIONS = 12  # guardrail against runaway loops
+MAX_TOOL_ITERATIONS = 12        # guardrail against runaway loops
 
 
 ConfirmCb = Callable[[str, dict, Tier], Awaitable[bool]]
@@ -77,11 +83,28 @@ class Agent:
         messages: list[dict] = [{"role": "user", "content": composed}]
         memory.log_turn(conv_id, channel, {"role": "user", "content": user_message})
 
+        # Per-channel model + token budget. Voice routes to Haiku 4.5 with
+        # a tight max_tokens so replies stay short and the time-to-last-token
+        # is ~1-3s vs. Opus's 8-30s. Pre-turn retrieval already injects
+        # schedule/calendar/profile/lessons so Haiku has the context it
+        # needs for most voice questions.
+        is_voice = channel == "voice"
+        model = VOICE_MODEL if is_voice else self.model
+        max_tokens = VOICE_MAX_TOKENS if is_voice else DEFAULT_MAX_TOKENS
+        system = self.system_prompt
+        if is_voice:
+            system = (
+                system
+                + "\n\n[voice-turn mode] Your reply will be spoken aloud. "
+                "Keep it to 1-2 short sentences. No bullet lists. No markdown "
+                "formatting. Be direct and conversational."
+            )
+
         for iteration in range(MAX_TOOL_ITERATIONS):
             resp = await self.client.messages.create(
-                model=self.model,
-                max_tokens=DEFAULT_MAX_TOKENS,
-                system=self.system_prompt,
+                model=model,
+                max_tokens=max_tokens,
+                system=system,
                 tools=self.tools,
                 messages=messages,
             )

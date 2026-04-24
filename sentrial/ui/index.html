@@ -2342,13 +2342,14 @@ pushBtn.addEventListener('click', async () => {
       for (let i = 0; i < NODES; i++) {
         const v = baseVerts[i];
         const seed = nodeSeeds[i];
-        // Radial wobble — pushes each vertex in/out off the unit sphere so the
-        // surface isn't a geometric ideal. Amplitude scales with live level:
-        // loud voice → nodes extend outward noticeably, silence → subtle
-        // breathing. The 1 + 2.4*externalPulse term is the visible kick.
-        const wob = 1 + Math.sin(ts * seed.freq + seed.phase)
-                     * seed.amp * (0.6 + activePulse)
-                     * (1 + externalPulse * 2.4);
+        // Radial wobble + voice-driven extension. Two pieces:
+        //   • sinusoidal per-node wobble that breathes regardless of voice
+        //   • direct radial PUSH proportional to externalPulse, so loud
+        //     voice physically extends nodes outward (not just wiggle)
+        const wob = (1 + Math.sin(ts * seed.freq + seed.phase)
+                        * seed.amp * (0.6 + activePulse)
+                        * (1 + externalPulse * 3.0))
+                  + externalPulse * 0.18;
         let x = v[0] * wob, y = v[1] * wob, z = v[2] * wob;
         // Z rotation
         let rx = x * cZ - y * sZ;
@@ -2379,7 +2380,10 @@ pushBtn.addEventListener('click', async () => {
         const az = (pa[2] + pb[2]) * 0.5;
         el.setAttribute('opacity', (0.14 + (az + 1) * 0.34).toFixed(2));
       }
-      // Nodes: radius scales with depth + pulse; opacity with depth.
+      // Nodes: radius scales with depth + pulse + voice level. The
+      // externalPulse term is the part Liam SEES when he speaks — boost
+      // it hard so every node visibly grows and the wobble extends
+      // outward by ~12% at full tilt.
       for (let i = 0; i < NODES; i++) {
         const p = proj[i];
         const seed = nodeSeeds[i];
@@ -2387,7 +2391,8 @@ pushBtn.addEventListener('click', async () => {
         el.setAttribute('cx', p[0].toFixed(1));
         el.setAttribute('cy', p[1].toFixed(1));
         const twinkle = 1 + Math.sin(ts * seed.freq * 1.3 + seed.phase) * 0.35 * activePulse;
-        el.setAttribute('r', (2.0 + (p[2] + 1) * 0.9 * twinkle).toFixed(2));
+        const voiceKick = 1 + externalPulse * 2.2;   // direct radius kick
+        el.setAttribute('r', (2.0 + (p[2] + 1) * 0.9 * twinkle * voiceKick).toFixed(2));
         el.setAttribute('opacity', (0.42 + (p[2] + 1) * 0.28).toFixed(2));
       }
       rafId = requestAnimationFrame(frame);
@@ -2678,10 +2683,12 @@ pushBtn.addEventListener('click', async () => {
 
     setState('thinking');
     hint.textContent = 'Thinking…';
-    transcript.textContent = finalText;
+    // Voice mode = pure voice. No text echoed under the globe, no chat
+    // transcript messages appearing while speaking. The turn is still
+    // recorded to the backend conversation (via /inbound) so the Chat tab
+    // shows it after Voice Mode closes.
+    transcript.textContent = '';
     transcript.classList.remove('response');
-    pushMsg('user', finalText);
-    const typingEl = pushTyping();
 
     try {
       const r = await api('POST', '/inbound', {
@@ -2689,15 +2696,9 @@ pushBtn.addEventListener('click', async () => {
       });
       const d = await r.json();
       // Superseded? (User spoke again while we were fetching.)
-      if (mySeq !== turnSeq) { typingEl.remove(); return; }
-      typingEl.remove();
+      if (mySeq !== turnSeq) return;
       const reply = d.reply || '(no reply)';
-      pushMsg('sentrial', reply);
 
-      // Don't echo the reply under the globe — it reads robotically as the
-      // TTS catches up to the rendered text and the screen feels cluttered.
-      // Keep the chat transcript (above) as the source of truth for later
-      // review; the globe shows just state + a tiny hint.
       transcript.textContent = '';
       transcript.classList.remove('response');
       setState('speaking');
@@ -2720,9 +2721,7 @@ pushBtn.addEventListener('click', async () => {
         }
       });
     } catch (e) {
-      if (mySeq !== turnSeq) { typingEl.remove(); return; }
-      typingEl.remove();
-      pushMsg('sentrial', '[error] ' + e.message);
+      if (mySeq !== turnSeq) return;
       transcript.textContent = '[error] ' + e.message;
       setState('listening');
     }
@@ -2793,13 +2792,17 @@ pushBtn.addEventListener('click', async () => {
   }
   window.stripForSpeech = stripForSpeech;
 
-  // --- Pick the best available TTS voice for this platform ---
-  // macOS ships "Premium" / "Enhanced" voices under Siri Voice 1-4 +
-  // Samantha / Daniel / Karen / Moira. These sound dramatically less
-  // robotic than Apple's default 'Fred' / 'Alex'. Pick the first match.
-  function pickVoice() {
+  // --- Warm up speechSynthesis voice list ---
+  // Safari/WebKit populates getVoices() asynchronously: the first call
+  // returns [] and `voiceschanged` fires a few hundred ms later. If we
+  // naively call pickVoice() inside speak(), we either assign null (slow
+  // fallback) OR we wait — both have been observed producing the 8-second
+  // first-word delay Liam saw. Warming now means the list is ready by the
+  // time the first voice turn fires.
+  let _cachedVoice = null;
+  function _refreshVoice() {
     const voices = (window.speechSynthesis && window.speechSynthesis.getVoices) ? window.speechSynthesis.getVoices() : [];
-    if (!voices.length) return null;
+    if (!voices.length) return false;
     const byQuality = [
       /siri/i, /samantha.*premium|samantha.*enhanced/i, /daniel.*premium|daniel.*enhanced/i,
       /samantha/i, /daniel/i, /karen/i, /moira/i, /aaron/i,
@@ -2807,9 +2810,18 @@ pushBtn.addEventListener('click', async () => {
     ];
     for (const re of byQuality) {
       const hit = voices.find(v => re.test(v.name + ' ' + (v.lang || '')));
-      if (hit) return hit;
+      if (hit) { _cachedVoice = hit; return true; }
     }
-    return voices.find(v => v.lang && v.lang.startsWith('en')) || voices[0];
+    _cachedVoice = voices.find(v => v.lang && v.lang.startsWith('en')) || voices[0];
+    return true;
+  }
+  if ('speechSynthesis' in window) {
+    // Kick the voice list: calling getVoices() once often prompts async
+    // population. voiceschanged fires when it's ready.
+    try { window.speechSynthesis.getVoices(); } catch {}
+    window.speechSynthesis.addEventListener('voiceschanged', _refreshVoice);
+    // Try immediately in case voices are already available synchronously.
+    _refreshVoice();
   }
 
   function speakBrowser(text, onDone) {
@@ -2818,17 +2830,16 @@ pushBtn.addEventListener('click', async () => {
     const cleaned = stripForSpeech(text);
     if (!cleaned) { onDone && onDone(); return; }
     const u = new SpeechSynthesisUtterance(cleaned);
-    u.rate = 1.12;   // Bump rate a touch — default is sluggish.
+    u.rate = 1.14;
     u.pitch = 1.0;
     u.volume = 1.0;
-    const v = pickVoice();
-    if (v) u.voice = v;
-    // Pulse the globe on every word boundary so speaking is visually active
-    // even though the Web Speech API doesn't expose audio frame data.
+    // Assign cached voice if ready; otherwise fire without it (don't block).
+    // Speech quality is a tiny bit worse for the first utterance before
+    // voices populate, but latency stays ~200ms.
+    if (_cachedVoice) u.voice = _cachedVoice;
+    else _refreshVoice();
     u.onboundary = (ev) => {
-      if (ev.name === 'word') {
-        setExternalPulse(0.7 + Math.random() * 0.3);
-      }
+      if (ev.name === 'word') setExternalPulse(0.7 + Math.random() * 0.3, 220);
     };
     u.onend = () => { clearExternalPulse(); onDone && onDone(); };
     u.onerror = () => { clearExternalPulse(); onDone && onDone(); };
