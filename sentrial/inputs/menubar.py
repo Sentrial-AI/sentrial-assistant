@@ -71,10 +71,8 @@ def run():
         NSWindowStyleMaskUtilityWindow,
     )
     from Foundation import (
-        NSDate,
         NSMakeRect,
         NSObject,
-        NSSet,
         NSURL,
         NSURLRequest,
         NSURLRequestReloadIgnoringLocalCacheData,
@@ -84,7 +82,6 @@ def run():
         WKUserContentController,
         WKWebView,
         WKWebViewConfiguration,
-        WKWebsiteDataStore,
     )
 
     from sentrial.core import secrets as kc
@@ -167,21 +164,12 @@ def run():
             # (used to hand Sentrial's reply text back for TTS playback in Voice Mode).
             config.userContentController().addScriptMessageHandler_name_(self, "sentrial")
 
-            # Clear HTTP cache + service worker registrations on each launch so UI
-            # changes on Railway always appear. Preserves localStorage (token stays).
-            try:
-                types = NSSet.setWithArray_([
-                    "WKWebsiteDataTypeDiskCache",
-                    "WKWebsiteDataTypeMemoryCache",
-                    "WKWebsiteDataTypeOfflineWebApplicationCache",
-                    "WKWebsiteDataTypeServiceWorkerRegistrations",
-                    "WKWebsiteDataTypeFetchCache",
-                ])
-                since = NSDate.dateWithTimeIntervalSince1970_(0)
-                WKWebsiteDataStore.defaultDataStore() \
-                    .removeDataOfTypes_modifiedSince_completionHandler_(types, since, None)
-            except Exception as e:  # noqa: BLE001
-                log.debug("cache clear skipped: %s", e)
+            # Note: we don't proactively wipe WKWebsiteDataStore caches here. An earlier
+            # version of this code called removeDataOfTypes_:modifiedSince_:completionHandler_
+            # with None as the completion handler — PyObjC can't marshal that into a valid
+            # objc block and WebKit segfaults when it tries to invoke it (0x10 deref).
+            # Cache invalidation is handled instead by (a) service worker v3 network-first
+            # for HTML and (b) NSURLRequestReloadIgnoringLocalCacheData on the initial load.
 
             self._webview = WKWebView.alloc().initWithFrame_configuration_(
                 NSMakeRect(0, 0, POPOVER_W, POPOVER_H), config
