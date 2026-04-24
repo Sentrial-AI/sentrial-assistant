@@ -219,11 +219,38 @@ def run():
                 ("peerConnectionEnabled", True),
                 ("mediaStreamEnabled", True),
                 ("mockCaptureDevicesEnabled", False),
+                # Dev console so we can right-click → Inspect Element when
+                # something in the PWA is silently broken.
+                ("developerExtrasEnabled", True),
             ):
                 try:
                     prefs.setValue_forKey_(val, key)
                 except Exception as e:  # noqa: BLE001
                     log.debug("WKPreferences key not supported: %s (%s)", key, e)
+
+            # Bridge console.log/warn/error → native so we can see PWA errors
+            # in the menubar.err.log without needing the inspector open. Injected
+            # at document-start on every navigation.
+            console_bridge = (
+                "(function(){"
+                "  const forward = (level) => (...args) => {"
+                "    try {"
+                "      window.webkit.messageHandlers.sentrial.postMessage({"
+                "        type: 'console', level, text: args.map(String).join(' ').slice(0, 800)"
+                "      });"
+                "    } catch (e) {}"
+                "  };"
+                "  ['log','warn','error','info'].forEach(l => { const orig = console[l]; console[l] = function(...a){ forward(l)(...a); orig.apply(console, a); }; });"
+                "  window.addEventListener('error', (e) => forward('error')('JS ERROR:', e.message, e.filename + ':' + e.lineno));"
+                "  window.addEventListener('unhandledrejection', (e) => forward('error')('JS PROMISE REJECT:', (e.reason && e.reason.message) || e.reason));"
+                "})();"
+            )
+            from WebKit import WKUserScript
+            # WKUserScriptInjectionTimeAtDocumentStart = 0
+            user_script = WKUserScript.alloc().initWithSource_injectionTime_forMainFrameOnly_(
+                console_bridge, 0, True
+            )
+            config.userContentController().addUserScript_(user_script)
 
             # Note: we don't proactively wipe WKWebsiteDataStore caches here. An earlier
             # version of this code called removeDataOfTypes_:modifiedSince_:completionHandler_
@@ -501,6 +528,11 @@ def run():
                 log.debug("bad script message: %s", e)
                 return
 
+            if kind == "console":
+                level = str(body.get("level", "log"))
+                logger = log.warning if level in ("warn", "error") else log.info
+                logger("PWA console.%s: %s", level, text[:800])
+                return
             if kind == "voice_reply" and text:
                 api_key = self._nova3_key()
                 voice = kc.get("sentrial_voice") or "aura-2-orion-en"
