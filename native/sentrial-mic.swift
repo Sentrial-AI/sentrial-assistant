@@ -22,8 +22,18 @@ import Foundation
 let stderr = FileHandle.standardError
 func logErr(_ s: String) { stderr.write((s + "\n").data(using: .utf8)!) }
 
+// Diagnostics: what does macOS think this process is? Helps debug whether the
+// embedded Info.plist / bundle attribution is actually being picked up.
+let bundle = Bundle.main
+logErr("sentrial-mic: bundleID=\(bundle.bundleIdentifier ?? "(nil)") "
+     + "execPath=\(bundle.executablePath ?? "(nil)")")
+let micKey = bundle.object(forInfoDictionaryKey: "NSMicrophoneUsageDescription") as? String
+logErr("sentrial-mic: NSMicrophoneUsageDescription=\(micKey.map { "\"\($0)\"" } ?? "MISSING")")
+
 // -- 1. Explicitly request mic permission (surfaces TCC prompt first time). --
 let status = AVCaptureDevice.authorizationStatus(for: .audio)
+logErr("sentrial-mic: initial authorizationStatus=\(status.rawValue) "
+     + "(0=ND 1=Restricted 2=Denied 3=Authorized)")
 if status == .notDetermined {
     let sema = DispatchSemaphore(value: 0)
     var granted = false
