@@ -587,6 +587,185 @@
 
   /* ---------- DASHBOARD (hub) ---------- */
   .today-body { padding: 4px 20px 80px; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 18px; }
+
+  /* Hero: greeting + weather side-by-side on wide, stacked on narrow. */
+  .dash-hero {
+    display: grid; grid-template-columns: 1fr;
+    gap: 14px; margin: 4px 0 6px;
+  }
+  @media (min-width: 620px) {
+    .dash-hero { grid-template-columns: 1fr minmax(240px, 320px); align-items: stretch; }
+  }
+  .dash-greeting {
+    display: flex; flex-direction: column; justify-content: center;
+    gap: 4px; padding: 4px 2px;
+  }
+  .dash-greeting-line1 {
+    font-size: 26px; font-weight: 500; letter-spacing: -0.02em;
+    color: var(--text);
+  }
+  .dash-greeting-line2 {
+    font-size: 13px; color: var(--text-3); letter-spacing: 0.01em;
+  }
+
+  /* Weather card */
+  .weather-card {
+    background: linear-gradient(135deg, rgba(94,234,212,0.06), rgba(59,130,246,0.04));
+    border: 1px solid var(--border); border-radius: 14px;
+    padding: 14px 16px;
+    display: flex; flex-direction: column; gap: 10px;
+    min-height: 120px;
+  }
+  .weather-card.empty {
+    cursor: pointer;
+    display: grid; place-items: center;
+    color: var(--text-3); text-align: center; font-size: 12px;
+    transition: background 0.15s;
+  }
+  .weather-card.empty:hover { background: rgba(94,234,212,0.08); }
+  .weather-sub { font-size: 10px; color: var(--text-faint); }
+  .weather-top {
+    display: flex; align-items: center; gap: 14px;
+  }
+  .weather-icon { font-size: 34px; line-height: 1; }
+  .weather-now { display: flex; flex-direction: column; }
+  .weather-temp {
+    font-size: 30px; font-weight: 400; line-height: 1;
+    letter-spacing: -0.03em; color: var(--text);
+  }
+  .weather-label { font-size: 12px; color: var(--text-2); margin-top: 3px; }
+  .weather-meta {
+    display: flex; gap: 12px; flex-wrap: wrap;
+    font-size: 11px; color: var(--text-3);
+    font-family: var(--mono); letter-spacing: 0.02em;
+  }
+  .weather-daily {
+    display: flex; gap: 14px; flex-wrap: wrap;
+    font-size: 12px; color: var(--text-2);
+    border-top: 1px solid var(--border); padding-top: 8px;
+  }
+  .weather-daily .d-label {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em;
+    color: var(--text-3); margin-right: 4px;
+  }
+
+  /* Dashboard card grid — 1-col on narrow, 2-col on medium, 3-col on wide. */
+  .dash-grid {
+    display: grid; gap: 14px;
+    grid-template-columns: 1fr;
+  }
+  @media (min-width: 620px) { .dash-grid { grid-template-columns: 1fr 1fr; } }
+  @media (min-width: 900px) { .dash-grid { grid-template-columns: 1fr 1fr 1fr; } }
+  .dash-col { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+
+  .dash-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 14px 16px;
+    display: flex; flex-direction: column; gap: 8px;
+    min-width: 0;
+  }
+  .dash-card.muted { opacity: 0.75; }
+  .dash-card-title {
+    display: flex; justify-content: space-between; align-items: center; gap: 8px;
+    font-size: 11px; font-weight: 500;
+    letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--text-3);
+  }
+  .dash-card-title .count,
+  .dash-card-title .progress-text {
+    font-family: var(--mono); font-size: 11px;
+    color: var(--text-3); letter-spacing: 0;
+    text-transform: none;
+  }
+  .dash-add-btn {
+    width: 22px; height: 22px; border-radius: 50%;
+    background: var(--elevated); color: var(--text-2);
+    border: 1px solid var(--border); cursor: pointer;
+    font-size: 14px; line-height: 1; padding: 0;
+    transition: all 0.15s;
+  }
+  .dash-add-btn:hover {
+    background: var(--accent-muted); color: var(--accent); border-color: var(--accent);
+  }
+
+  /* Meetings list */
+  .meeting-list { display: flex; flex-direction: column; gap: 6px; }
+  .meeting-row {
+    display: grid; grid-template-columns: 64px 1fr; gap: 10px;
+    padding: 8px 10px; border-radius: 8px;
+    background: rgba(94,234,212,0.04);
+    border: 1px solid rgba(94,234,212,0.12);
+    cursor: pointer; transition: background 0.15s;
+  }
+  .meeting-row:hover { background: rgba(94,234,212,0.10); }
+  .meeting-time {
+    font-family: var(--mono); font-size: 11px;
+    color: var(--accent); letter-spacing: 0;
+    align-self: center;
+  }
+  .meeting-time.past { color: var(--danger); }
+  .meeting-time.now { color: var(--warn); font-weight: 600; }
+  .meeting-title {
+    font-size: 13px; color: var(--text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+
+  /* Reminders list */
+  .reminder-list { display: flex; flex-direction: column; gap: 4px; }
+  .reminder-row {
+    display: grid; grid-template-columns: 8px 1fr auto auto; gap: 8px;
+    align-items: center;
+    padding: 6px 2px;
+  }
+  .reminder-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--accent);
+  }
+  .reminder-title {
+    font-size: 13px; color: var(--text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .reminder-when {
+    font-family: var(--mono); font-size: 10px;
+    color: var(--text-3); letter-spacing: 0.02em;
+  }
+  .reminder-when.past { color: var(--danger); }
+  .reminder-when.now { color: var(--warn); }
+  .reminder-when.soon { color: var(--accent); }
+  .reminder-x {
+    width: 22px; height: 22px; border: none; background: transparent;
+    color: var(--text-faint); cursor: pointer; font-size: 16px; line-height: 1;
+    padding: 0; border-radius: 4px;
+    transition: all 0.15s;
+  }
+  .reminder-x:hover { background: rgba(239, 68, 68, 0.12); color: var(--danger); }
+
+  /* Notes */
+  .note-list { display: flex; flex-direction: column; gap: 4px; }
+  .note-row {
+    display: grid; grid-template-columns: 20px 1fr 22px; gap: 8px;
+    align-items: start; padding: 6px 2px;
+  }
+  .note-row.pinned { background: rgba(251,191,36,0.06); border-radius: 8px; padding: 8px 6px; }
+  .note-pin {
+    cursor: pointer; font-size: 14px; line-height: 1.2;
+    color: var(--text-faint); transition: color 0.15s;
+  }
+  .note-row.pinned .note-pin { color: var(--warn); }
+  .note-pin:hover { color: var(--warn); }
+  .note-text {
+    font-size: 13px; color: var(--text); line-height: 1.45;
+    word-wrap: break-word; white-space: pre-wrap;
+  }
+  .note-x {
+    width: 22px; height: 22px; border: none; background: transparent;
+    color: var(--text-faint); cursor: pointer; font-size: 16px; line-height: 1;
+    padding: 0; border-radius: 4px;
+    transition: all 0.15s;
+  }
+  .note-x:hover { background: rgba(239, 68, 68, 0.12); color: var(--danger); }
+
+  /* Legacy section-title compat for any views still using the older class. */
   .today-section-title {
     font-size: 11px; font-weight: 500;
     letter-spacing: 0.08em; text-transform: uppercase;
@@ -2153,22 +2332,89 @@ document.getElementById('history-close').addEventListener('click', closeHistory)
 document.getElementById('new-chat').addEventListener('click', startNewChat);
 
 // ================ Today (hub) ================
-async function loadToday() {
-  try {
-    const r = await api('GET', '/api/today');
-    if (!r.ok) return;
-    const d = await r.json();
-    renderToday(d);
+// Dashboard fans out to /api/today, /api/reminders, /api/notes, /api/weather
+// in parallel so the whole view paints in one request round-trip. Each
+// subcomponent degrades gracefully if its source isn't available.
 
-    // Update badge: count of warnings
-    const n = (d.warnings || []).length;
+const WEATHER_COORDS_KEY = 'sentrial.weather.coords';
+let todayRefreshInFlight = false;
+
+async function loadToday() {
+  if (todayRefreshInFlight) return;
+  todayRefreshInFlight = true;
+  try {
+    const coordsPromise = ensureWeatherCoords();
+    const [todayRes, remRes, notesRes] = await Promise.all([
+      api('GET', '/api/today').catch(() => null),
+      api('GET', '/api/reminders?status=upcoming&limit=30').catch(() => null),
+      api('GET', '/api/notes').catch(() => null),
+    ]);
+    const today = todayRes && todayRes.ok ? await todayRes.json() : null;
+    const reminders = remRes && remRes.ok ? (await remRes.json()).reminders || [] : [];
+    const notes = notesRes && notesRes.ok ? (await notesRes.json()).notes || [] : [];
+
+    let weather = null;
+    try {
+      const coords = await coordsPromise;
+      if (coords) {
+        const wRes = await api('GET', `/api/weather?lat=${coords.lat}&lon=${coords.lon}&timezone=auto`);
+        if (wRes.ok) weather = await wRes.json();
+      }
+    } catch {}
+
+    renderToday({ today, reminders, notes, weather });
+
+    // Badge: warnings + upcoming reminders in the next 2h that aren't delivered.
+    let badgeCount = (today && today.warnings || []).length;
+    const now = Date.now();
+    const soon = reminders.filter(r => (new Date(r.due_at).getTime() - now) < 2 * 60 * 60 * 1000).length;
+    badgeCount += soon;
     ['today-badge-top', 'today-badge-bottom'].forEach(id => {
       const b = document.getElementById(id);
       if (!b) return;
-      if (n > 0) { b.textContent = n; b.hidden = false; } else { b.hidden = true; }
+      if (badgeCount > 0) { b.textContent = badgeCount; b.hidden = false; }
+      else { b.hidden = true; }
     });
   } catch {}
+  todayRefreshInFlight = false;
 }
+
+async function ensureWeatherCoords() {
+  // Try localStorage cache first so we don't prompt repeatedly.
+  try {
+    const cached = JSON.parse(localStorage.getItem(WEATHER_COORDS_KEY) || 'null');
+    if (cached && typeof cached.lat === 'number') return cached;
+  } catch {}
+  // Fall back to geolocation. Silently give up on permission denial — weather
+  // widget just shows "Set location" and the dashboard continues.
+  if (!navigator.geolocation) return null;
+  try {
+    return await new Promise((res, rej) => {
+      const t = setTimeout(() => rej(new Error('timeout')), 6000);
+      navigator.geolocation.getCurrentPosition(
+        pos => {
+          clearTimeout(t);
+          const coords = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+          try { localStorage.setItem(WEATHER_COORDS_KEY, JSON.stringify(coords)); } catch {}
+          res(coords);
+        },
+        err => { clearTimeout(t); rej(err); },
+        { maximumAge: 30 * 60 * 1000, timeout: 5000 },
+      );
+    });
+  } catch {
+    return null;
+  }
+}
+
+function setWeatherLocationManually() {
+  const lat = parseFloat(prompt('Latitude?') || '');
+  const lon = parseFloat(prompt('Longitude?') || '');
+  if (isNaN(lat) || isNaN(lon)) return;
+  localStorage.setItem(WEATHER_COORDS_KEY, JSON.stringify({ lat, lon }));
+  loadToday();
+}
+window.setWeatherLocationManually = setWeatherLocationManually;
 
 // --- Todo helpers ---
 const MEETING_RE = /\b(meeting|call with|sync with|standup|1:1|catch.?up|interview|pitch|discovery|kickoff|coffee with|lunch with)\b/i;
@@ -2223,33 +2469,17 @@ function shortenTitle(title) {
   return cut.length < title.length ? cut : title;
 }
 
-function renderToday(d) {
+function renderToday({ today: d, reminders, notes, weather }) {
   const el = document.getElementById('today-body');
   if (!el) return;
+  d = d || { integrations: [], todos: [], warnings: [], emails: { status: 'not_connected' }, calendar: { status: 'not_connected' } };
 
-  // Integrations
-  const integsHtml = (d.integrations || []).map(i => {
-    const cls = i.status === 'active' ? '' : i.status === 'pending_auth' ? 'pending' : 'off';
-    return `<div class="integ-card"><div class="integ-dot ${cls}"></div><span class="integ-name">${esc(i.name)}</span></div>`;
-  }).join('');
-
-  // Warnings
-  const warningsHtml = (d.warnings || []).length
-    ? (d.warnings || []).map(w => {
-        const severity = w.type === 'job_failed' || w.type === 'integration_error' ? 'danger'
-                      : w.type === 'proposals_pending' ? 'info' : '';
-        return `<div class="warning-card ${severity}"><span class="warning-icon">!</span><div class="warning-text">${esc(w.text)}</div></div>`;
-      }).join('')
-    : '<div class="empty-state" style="padding: 12px;">All clear.</div>';
-
-  // Todos — compact, meeting-highlighted, time-aware
   const now = new Date();
   const todos = (d.todos || []);
   const done = todos.filter(t => (t.status || '').toLowerCase() === 'done').length;
   const total = todos.length;
   const pct = total ? Math.round((done / total) * 100) : 0;
 
-  // Sort: overdue → meetings soon → today → later
   const decorated = todos.map(t => {
     const when = whenChip(t, now);
     const meeting = isMeetingTitle(t.title);
@@ -2262,47 +2492,309 @@ function renderToday(d) {
     return { t, when, meeting, priority };
   }).sort((a, b) => a.priority - b.priority);
 
-  const todosHtml = decorated.length
-    ? decorated.map(({ t, when, meeting }) => {
-        const cls = [meeting ? 'meeting' : '', when.cls === 'past' ? 'overdue' : ''].filter(Boolean).join(' ');
-        const title = esc(shortenTitle(t.title));
-        const chip = when.label ? `<span class="todo-when ${when.cls}">${esc(when.label)}</span>` : '';
-        const openAttr = t.url ? `onclick="openTodoUrl('${esc(t.url)}')"` : '';
-        return `<div class="todo-row ${cls}" ${openAttr}>
-          <button class="todo-check" onclick="event.stopPropagation(); completeTodo('${esc(t.id)}')" title="Mark done"></button>
-          <span class="todo-text">${title}</span>
-          ${chip}
-        </div>`;
-      }).join('')
-    : (d.todos_error
-        ? `<div class="empty-state" style="padding: 12px;">Notion error: ${esc(d.todos_error)}</div>`
-        : '<div class="empty-state" style="padding: 12px;">Nothing on your plate.</div>');
-
-  const emailsMsg = d.emails.status === 'not_connected'
-    ? 'Gmail not connected yet.'
-    : d.emails.status === 'pending_integration'
-      ? 'Gmail key set — OAuth wiring pending.'
-      : '';
+  const upcomingMeetings = decorated.filter(x => x.meeting).slice(0, 5);
+  const normalTodos = decorated.filter(x => !x.meeting);
 
   el.innerHTML = `
-    <div class="today-section">
-      <div class="today-section-title"><span>Integrations</span></div>
-      <div class="integ-grid">${integsHtml}</div>
-    </div>
-    ${(d.warnings || []).length ? `<div class="today-section">
-      <div class="today-section-title"><span>Warnings</span><span class="count">${(d.warnings||[]).length}</span></div>
-      ${warningsHtml}
-    </div>` : ''}
-    <div class="today-section">
-      <div class="today-section-title"><span>Todos</span><span class="progress-text">${done}/${total}</span></div>
-      <div class="todo-progress"><div class="todo-progress-fill" style="width:${pct}%"></div></div>
-      <div class="todo-list-compact">${todosHtml}</div>
-    </div>
-    <div class="today-section">
-      <div class="today-section-title"><span>Emails</span></div>
-      <div class="empty-state" style="padding: 12px;">${esc(emailsMsg)}</div>
+    ${renderHeroRow(now, weather)}
+    <div class="dash-grid">
+      <div class="dash-col">
+        ${renderMeetingsCard(upcomingMeetings, d.calendar)}
+        ${renderRemindersCard(reminders)}
+      </div>
+      <div class="dash-col">
+        ${renderTodosCard(normalTodos, done, total, pct, d.todos_error)}
+        ${renderNotesCard(notes)}
+      </div>
+      <div class="dash-col">
+        ${renderIntegrationsCard(d.integrations || [])}
+        ${renderWarningsCard(d.warnings || [])}
+      </div>
     </div>
   `;
+}
+
+function renderHeroRow(now, weather) {
+  const hour = now.getHours();
+  const greeting = hour < 5 ? "Still up?"
+    : hour < 12 ? "Good morning"
+    : hour < 17 ? "Good afternoon"
+    : hour < 21 ? "Good evening"
+    : "Late night";
+  const dateStr = now.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' });
+  return `
+    <div class="dash-hero">
+      <div class="dash-greeting">
+        <div class="dash-greeting-line1">${esc(greeting)}, Liam.</div>
+        <div class="dash-greeting-line2">${esc(dateStr)}</div>
+      </div>
+      ${renderWeatherCard(weather)}
+    </div>
+  `;
+}
+
+function renderWeatherCard(weather) {
+  if (!weather || !weather.current) {
+    return `<div class="weather-card empty" onclick="setWeatherLocationManually()" title="Click to set location manually">
+      <div class="weather-empty">Set location<br><span class="weather-sub">tap for manual entry</span></div>
+    </div>`;
+  }
+  const c = weather.current;
+  const daily = weather.daily || {};
+  const today = {
+    code: (daily.weather_code || [])[0],
+    max: (daily.temperature_2m_max || [])[0],
+    min: (daily.temperature_2m_min || [])[0],
+    precip: (daily.precipitation_probability_max || [])[0],
+  };
+  const tomorrow = {
+    code: (daily.weather_code || [])[1],
+    max: (daily.temperature_2m_max || [])[1],
+    min: (daily.temperature_2m_min || [])[1],
+  };
+  const icon = weatherIcon(c.weather_code);
+  return `
+    <div class="weather-card">
+      <div class="weather-top">
+        <span class="weather-icon">${icon}</span>
+        <div class="weather-now">
+          <div class="weather-temp">${Math.round(c.temperature_2m)}°</div>
+          <div class="weather-label">${weatherLabel(c.weather_code)}</div>
+        </div>
+      </div>
+      <div class="weather-meta">
+        <span>Feels ${Math.round(c.apparent_temperature)}°</span>
+        <span>💨 ${Math.round(c.wind_speed_10m)} mph</span>
+        <span>💧 ${today.precip ?? 0}%</span>
+      </div>
+      <div class="weather-daily">
+        <div><span class="d-label">Today</span> ${Math.round(today.max)}°/${Math.round(today.min)}°</div>
+        <div><span class="d-label">Tomorrow</span> ${weatherIcon(tomorrow.code)} ${Math.round(tomorrow.max)}°/${Math.round(tomorrow.min)}°</div>
+      </div>
+    </div>
+  `;
+}
+
+function weatherIcon(code) {
+  // WMO weather codes — mapped to a few broad groups.
+  if (code === 0) return '☀️';
+  if (code >= 1 && code <= 3) return '⛅';
+  if (code >= 45 && code <= 48) return '🌫️';
+  if (code >= 51 && code <= 67) return '🌧️';
+  if (code >= 71 && code <= 77) return '❄️';
+  if (code >= 80 && code <= 82) return '🌦️';
+  if (code >= 95) return '⛈️';
+  return '☁️';
+}
+function weatherLabel(code) {
+  if (code === 0) return 'Clear';
+  if (code >= 1 && code <= 3) return 'Partly cloudy';
+  if (code >= 45 && code <= 48) return 'Foggy';
+  if (code >= 51 && code <= 67) return 'Rain';
+  if (code >= 71 && code <= 77) return 'Snow';
+  if (code >= 80 && code <= 82) return 'Showers';
+  if (code >= 95) return 'Thunder';
+  return 'Cloudy';
+}
+
+function renderMeetingsCard(meetings, calendar) {
+  const connected = (calendar && calendar.status) === 'active';
+  if (!meetings.length) {
+    return `<div class="dash-card">
+      <div class="dash-card-title"><span>Upcoming meetings</span></div>
+      <div class="empty-state">${connected ? 'No meetings in the immediate queue.' : 'Calendar not connected — meetings are inferred from Notion task titles for now.'}</div>
+    </div>`;
+  }
+  return `<div class="dash-card">
+    <div class="dash-card-title"><span>Upcoming meetings</span><span class="count">${meetings.length}</span></div>
+    <div class="meeting-list">
+      ${meetings.map(({ t, when }) => `
+        <div class="meeting-row" ${t.url ? `onclick="openTodoUrl('${esc(t.url)}')"` : ''}>
+          <div class="meeting-time ${when.cls || ''}">${esc(when.label || '—')}</div>
+          <div class="meeting-title">${esc(shortenTitle(t.title))}</div>
+        </div>
+      `).join('')}
+    </div>
+  </div>`;
+}
+
+function renderTodosCard(decorated, doneCount, total, pct, err) {
+  if (err) {
+    return `<div class="dash-card">
+      <div class="dash-card-title"><span>Todos</span></div>
+      <div class="empty-state">Notion error: ${esc(err)}</div>
+    </div>`;
+  }
+  if (!decorated.length) {
+    return `<div class="dash-card">
+      <div class="dash-card-title"><span>Todos</span></div>
+      <div class="empty-state">Nothing on your plate.</div>
+    </div>`;
+  }
+  const rows = decorated.map(({ t, when }) => {
+    const cls = when.cls === 'past' ? 'overdue' : '';
+    const chip = when.label ? `<span class="todo-when ${when.cls}">${esc(when.label)}</span>` : '';
+    const openAttr = t.url ? `onclick="openTodoUrl('${esc(t.url)}')"` : '';
+    return `<div class="todo-row ${cls}" ${openAttr}>
+      <button class="todo-check" onclick="event.stopPropagation(); completeTodo('${esc(t.id)}')" title="Mark done"></button>
+      <span class="todo-text">${esc(shortenTitle(t.title))}</span>
+      ${chip}
+    </div>`;
+  }).join('');
+  return `<div class="dash-card">
+    <div class="dash-card-title"><span>Todos</span><span class="progress-text">${doneCount}/${total}</span></div>
+    <div class="todo-progress"><div class="todo-progress-fill" style="width:${pct}%"></div></div>
+    <div class="todo-list-compact">${rows}</div>
+  </div>`;
+}
+
+function renderRemindersCard(reminders) {
+  const list = (reminders || []).slice(0, 6);
+  const body = list.length
+    ? list.map(r => {
+        const due = new Date(r.due_at);
+        const min = Math.round((due - new Date()) / 60000);
+        const when = min < 0 ? 'late' : min < 60 ? `in ${min}m` : min < 1440 ? `in ${Math.round(min/60)}h`
+                    : due.toLocaleDateString([], { month: 'short', day: 'numeric' });
+        const cls = min < 0 ? 'past' : min < 60 ? 'now' : min < 240 ? 'soon' : '';
+        return `<div class="reminder-row">
+          <span class="reminder-dot"></span>
+          <span class="reminder-title">${esc(r.title)}</span>
+          <span class="reminder-when ${cls}">${esc(when)}</span>
+          <button class="reminder-x" onclick="cancelReminder('${esc(r.id)}')" title="Cancel">×</button>
+        </div>`;
+      }).join('')
+    : '<div class="empty-state">No reminders scheduled.</div>';
+  return `<div class="dash-card">
+    <div class="dash-card-title">
+      <span>Reminders</span>
+      <button class="dash-add-btn" onclick="addReminderInteractive()">+</button>
+    </div>
+    <div class="reminder-list">${body}</div>
+  </div>`;
+}
+
+function renderNotesCard(notes) {
+  const list = (notes || []).slice(0, 8);
+  const body = list.length
+    ? list.map(n => `
+        <div class="note-row ${n.pinned ? 'pinned' : ''}">
+          <span class="note-pin" onclick="togglePinNote('${esc(n.key)}', ${n.pinned ? 'false' : 'true'})" title="${n.pinned ? 'Unpin' : 'Pin'}">${n.pinned ? '★' : '☆'}</span>
+          <span class="note-text">${esc(n.text)}</span>
+          <button class="note-x" onclick="deleteNote('${esc(n.key)}')" title="Delete">×</button>
+        </div>
+      `).join('')
+    : '<div class="empty-state">No notes yet.</div>';
+  return `<div class="dash-card">
+    <div class="dash-card-title">
+      <span>Quick notes</span>
+      <button class="dash-add-btn" onclick="addNoteInteractive()">+</button>
+    </div>
+    <div class="note-list">${body}</div>
+  </div>`;
+}
+
+function renderIntegrationsCard(integrations) {
+  const integsHtml = integrations.map(i => {
+    const cls = i.status === 'active' ? '' : i.status === 'pending_auth' ? 'pending' : 'off';
+    return `<div class="integ-card"><div class="integ-dot ${cls}"></div><span class="integ-name">${esc(i.name)}</span></div>`;
+  }).join('');
+  return `<div class="dash-card">
+    <div class="dash-card-title"><span>Integrations</span></div>
+    <div class="integ-grid">${integsHtml || '<div class="empty-state">No integrations configured.</div>'}</div>
+  </div>`;
+}
+
+function renderWarningsCard(warnings) {
+  if (!warnings.length) {
+    return `<div class="dash-card muted">
+      <div class="dash-card-title"><span>Warnings</span></div>
+      <div class="empty-state">All clear.</div>
+    </div>`;
+  }
+  const body = warnings.map(w => {
+    const severity = w.type === 'job_failed' || w.type === 'integration_error' ? 'danger'
+                  : w.type === 'proposals_pending' ? 'info' : '';
+    return `<div class="warning-card ${severity}"><span class="warning-icon">!</span><div class="warning-text">${esc(w.text)}</div></div>`;
+  }).join('');
+  return `<div class="dash-card">
+    <div class="dash-card-title"><span>Warnings</span><span class="count">${warnings.length}</span></div>
+    ${body}
+  </div>`;
+}
+
+// ---- Dashboard interactions ----
+
+async function addNoteInteractive() {
+  const text = prompt('New note:');
+  if (!text) return;
+  await api('POST', '/api/notes', { text });
+  loadToday();
+}
+window.addNoteInteractive = addNoteInteractive;
+
+async function deleteNote(key) {
+  await api('DELETE', '/api/notes/' + encodeURIComponent(key));
+  loadToday();
+}
+window.deleteNote = deleteNote;
+
+async function togglePinNote(key, pinNow) {
+  // re-fetch existing note, re-upsert with pinned flipped
+  const r = await api('GET', '/api/notes');
+  if (!r.ok) return;
+  const d = await r.json();
+  const note = (d.notes || []).find(n => n.key === key);
+  if (!note) return;
+  await api('POST', '/api/notes', { key, text: note.text, pinned: pinNow === 'true' || pinNow === true });
+  loadToday();
+}
+window.togglePinNote = togglePinNote;
+
+async function addReminderInteractive() {
+  const title = prompt('Reminder title:');
+  if (!title) return;
+  const whenStr = prompt('When? e.g. "15m", "2h", "tomorrow 9am", or ISO datetime:', '15m');
+  if (!whenStr) return;
+  const due = parseRelativeTime(whenStr);
+  if (!due) { alert('Could not parse time.'); return; }
+  await api('POST', '/api/reminders', { title, due_at: due.toISOString() });
+  loadToday();
+}
+window.addReminderInteractive = addReminderInteractive;
+
+async function cancelReminder(rid) {
+  await api('DELETE', '/api/reminders/' + encodeURIComponent(rid));
+  loadToday();
+}
+window.cancelReminder = cancelReminder;
+
+function parseRelativeTime(s) {
+  const trimmed = (s || '').trim().toLowerCase();
+  // "15m", "2h", "3d"
+  const rel = trimmed.match(/^(\d+)\s*(m|min|mins|minutes|h|hr|hrs|hours|d|day|days)$/);
+  if (rel) {
+    const n = parseInt(rel[1], 10);
+    const unit = rel[2][0];
+    const mult = unit === 'd' ? 86400e3 : unit === 'h' ? 3600e3 : 60e3;
+    return new Date(Date.now() + n * mult);
+  }
+  // "tomorrow 9am", "today 5pm"
+  const natural = trimmed.match(/^(today|tomorrow)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/);
+  if (natural) {
+    const d = new Date();
+    if (natural[1] === 'tomorrow') d.setDate(d.getDate() + 1);
+    let h = parseInt(natural[2], 10);
+    const mm = parseInt(natural[3] || '0', 10);
+    if (natural[4] === 'pm' && h < 12) h += 12;
+    if (natural[4] === 'am' && h === 12) h = 0;
+    d.setHours(h, mm, 0, 0);
+    return d;
+  }
+  // ISO
+  const iso = new Date(trimmed);
+  if (!isNaN(iso.getTime())) return iso;
+  return null;
 }
 
 function openTodoUrl(url) { try { window.open(url, '_blank'); } catch {} }

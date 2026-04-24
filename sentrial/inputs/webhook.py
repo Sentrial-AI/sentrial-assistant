@@ -404,6 +404,211 @@ def build_app(
             "calendar": calendar_slot,
         }
 
+    # ---- Reminders (cross-platform, web-push backed) ----
+
+    @api.get("/api/reminders", dependencies=[Depends(require_auth)])
+    async def reminders_list(status: str = "upcoming", limit: int = 50):
+        from sentrial.core import reminders as _rem
+        if status == "upcoming":
+            return {"reminders": _rem.list_upcoming(limit=limit)}
+        return {"reminders": _rem.list_all(status=status, limit=limit)}
+
+    @api.post("/api/reminders", dependencies=[Depends(require_auth)])
+    async def reminders_create(body: dict):
+        from sentrial.core import reminders as _rem
+        try:
+            return _rem.create(
+                title=str(body.get("title") or ""),
+                due_at=str(body.get("due_at") or ""),
+                body=str(body.get("body") or ""),
+                channels=list(body.get("channels") or ["push"]),
+                source=str(body.get("source") or "user"),
+                notion_task_id=body.get("notion_task_id"),
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    @api.delete("/api/reminders/{rid}", dependencies=[Depends(require_auth)])
+    async def reminders_cancel(rid: str):
+        from sentrial.core import reminders as _rem
+        if not _rem.cancel(rid):
+            raise HTTPException(status_code=404, detail="not found or already fired")
+        return {"ok": True}
+
+    @api.post("/api/reminders/{rid}/snooze", dependencies=[Depends(require_auth)])
+    async def reminders_snooze(rid: str, body: dict):
+        from sentrial.core import reminders as _rem
+        r = _rem.snooze(rid, int(body.get("minutes") or 0))
+        if not r:
+            raise HTTPException(status_code=404, detail="not found or not scheduled")
+        return r
+
+    # ---- Quick notes (small dashboard-backed scratchpad over memory.facts) ----
+
+    @api.get("/api/notes", dependencies=[Depends(require_auth)])
+    async def notes_list():
+        notes = memory.recall_scope("notes") or {}
+        # Sort newest-first by key (keys are timestamps).
+        items = [
+            {"key": k, "text": (v.get("text") if isinstance(v, dict) else str(v)),
+             "pinned": bool(v.get("pinned", False)) if isinstance(v, dict) else False,
+             "updated_at": (v.get("updated_at") if isinstance(v, dict) else None)}
+            for k, v in notes.items()
+        ]
+        items.sort(key=lambda x: (not x["pinned"], -(int(x["key"]) if x["key"].isdigit() else 0)))
+        return {"notes": items}
+
+    @api.post("/api/notes", dependencies=[Depends(require_auth)])
+    async def notes_upsert(body: dict):
+        import time as _time
+        text = str(body.get("text") or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="text required")
+        key = str(body.get("key") or int(_time.time() * 1000))
+        memory.remember("notes", key, {
+            "text": text[:2000],
+            "pinned": bool(body.get("pinned", False)),
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        })
+        return {"ok": True, "key": key}
+
+    @api.delete("/api/notes/{key}", dependencies=[Depends(require_auth)])
+    async def notes_delete(key: str):
+        ok = memory.forget("notes", key)
+        if not ok:
+            raise HTTPException(status_code=404, detail="not found")
+        return {"ok": True}
+
+    # ---- Weather (proxy to Open-Meteo so the browser can stay keyless) ----
+
+    _WEATHER_CACHE: dict = {}
+
+    @api.get("/api/weather", dependencies=[Depends(require_auth)])
+    async def weather(lat: float, lon: float, timezone: str = "auto"):
+        """
+        Current conditions + 3-day forecast from Open-Meteo. Cached 10 min per
+        (rounded lat/lon) so rapid dashboard refreshes don't hammer the API.
+        """
+        import httpx
+        bucket = f"{round(lat, 2)}_{round(lon, 2)}_{timezone}"
+        entry = _WEATHER_CACHE.get(bucket)
+        now_ts = int(time.time())
+        if entry and (now_ts - entry["at"] < 600):
+            return entry["data"]
+        url = (
+            "https://api.open-meteo.com/v1/forecast"
+            f"?latitude={lat}&longitude={lon}"
+            "&current=temperature_2m,weather_code,wind_speed_10m,relative_humidity_2m,apparent_temperature"
+            "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset"
+            "&forecast_days=3&temperature_unit=fahrenheit&wind_speed_unit=mph"
+            f"&timezone={timezone}"
+        )
+        try:
+            async with httpx.AsyncClient(timeout=8) as client:
+                r = await client.get(url)
+                if r.status_code != 200:
+                    raise HTTPException(status_code=502, detail=f"open-meteo {r.status_code}")
+                data = r.json()
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=str(e))
+        _WEATHER_CACHE[bucket] = {"at": now_ts, "data": data}
+        return data
+
+    # ---- Plan-day passthrough (so dashboard can call the solver directly) ----
+
+    @api.post("/api/plan_day", dependencies=[Depends(require_auth)])
+    async def plan_day_ep(body: dict):
+        from sentrial.mcps.scheduling.server import plan_day
+        return await plan_day(body)
+
+    # ---- OAuth scaffolding (Notion + Google — tokens land in memory.facts) ----
+
+    @api.get("/api/oauth/notion/start")
+    async def oauth_notion_start():
+        cid = kc.get("notion_oauth_client_id") or os.environ.get("NOTION_OAUTH_CLIENT_ID")
+        if not cid:
+            raise HTTPException(status_code=503, detail="Notion OAuth client id not configured")
+        redirect = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/") + "/api/oauth/notion/callback"
+        from urllib.parse import urlencode
+        url = "https://api.notion.com/v1/oauth/authorize?" + urlencode({
+            "client_id": cid,
+            "response_type": "code",
+            "owner": "user",
+            "redirect_uri": redirect,
+        })
+        return RedirectResponse(url, status_code=307)
+
+    @api.get("/api/oauth/notion/callback")
+    async def oauth_notion_callback(code: str | None = None, error: str | None = None):
+        if error or not code:
+            raise HTTPException(status_code=400, detail=error or "missing code")
+        import base64, httpx as _httpx
+        cid = kc.get("notion_oauth_client_id") or os.environ.get("NOTION_OAUTH_CLIENT_ID")
+        cs = kc.get("notion_oauth_client_secret") or os.environ.get("NOTION_OAUTH_CLIENT_SECRET")
+        redirect = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/") + "/api/oauth/notion/callback"
+        if not cid or not cs:
+            raise HTTPException(status_code=503, detail="Notion OAuth not configured")
+        auth = base64.b64encode(f"{cid}:{cs}".encode()).decode()
+        try:
+            async with _httpx.AsyncClient(timeout=15) as client:
+                r = await client.post(
+                    "https://api.notion.com/v1/oauth/token",
+                    headers={"Authorization": f"Basic {auth}", "Content-Type": "application/json"},
+                    json={"grant_type": "authorization_code", "code": code, "redirect_uri": redirect},
+                )
+                if r.status_code != 200:
+                    raise HTTPException(status_code=502, detail=f"token exchange {r.status_code}: {r.text[:200]}")
+                tok = r.json()
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=str(e))
+        memory.remember("oauth", "notion", tok)
+        audit.log("user", "oauth_connected:notion", 2, result="saved")
+        return RedirectResponse("/ui/#settings", status_code=307)
+
+    @api.get("/api/oauth/google/start")
+    async def oauth_google_start(scope: str = "openid email profile"):
+        cid = kc.get("google_client_id") or os.environ.get("GOOGLE_CLIENT_ID")
+        if not cid:
+            raise HTTPException(status_code=503, detail="Google OAuth client id not configured")
+        redirect = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/") + "/api/oauth/google/callback"
+        from urllib.parse import urlencode
+        url = "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode({
+            "client_id": cid,
+            "redirect_uri": redirect,
+            "response_type": "code",
+            "scope": scope,
+            "access_type": "offline",
+            "prompt": "consent",
+            "include_granted_scopes": "true",
+        })
+        return RedirectResponse(url, status_code=307)
+
+    @api.get("/api/oauth/google/callback")
+    async def oauth_google_callback(code: str | None = None, error: str | None = None):
+        if error or not code:
+            raise HTTPException(status_code=400, detail=error or "missing code")
+        import httpx as _httpx
+        cid = kc.get("google_client_id") or os.environ.get("GOOGLE_CLIENT_ID")
+        cs = kc.get("google_client_secret") or os.environ.get("GOOGLE_CLIENT_SECRET")
+        redirect = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/") + "/api/oauth/google/callback"
+        if not cid or not cs:
+            raise HTTPException(status_code=503, detail="Google OAuth not configured")
+        try:
+            async with _httpx.AsyncClient(timeout=15) as client:
+                r = await client.post(
+                    "https://oauth2.googleapis.com/token",
+                    data={"code": code, "client_id": cid, "client_secret": cs,
+                          "redirect_uri": redirect, "grant_type": "authorization_code"},
+                )
+                if r.status_code != 200:
+                    raise HTTPException(status_code=502, detail=f"token exchange {r.status_code}: {r.text[:200]}")
+                tok = r.json()
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=str(e))
+        memory.remember("oauth", "google", tok)
+        audit.log("user", "oauth_connected:google", 2, result="saved")
+        return RedirectResponse("/ui/#settings", status_code=307)
+
     # ---- Evolution surfaces (profile / lessons / playbooks / KG / trials / integrity / reset) ----
 
     @api.get("/api/evolution/profile", dependencies=[Depends(require_auth)])
