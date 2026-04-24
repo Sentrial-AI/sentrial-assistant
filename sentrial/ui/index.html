@@ -2275,12 +2275,15 @@ pushBtn.addEventListener('click', async () => {
 
   // Overall pulse intensity (0..1). State-driven, bumped by impulses, decays.
   let pulse = 0.35;
-  // External pulse override — when set, the globe's per-node wobble
-  // amplitude scales from this value directly (instead of the
-  // baseline-toward-pulse ease). Fed by:
-  //   • mic mid-band RMS while listening (real voice level)
-  //   • TTS word-boundary events while speaking (synthetic pulses)
+  // External pulse target — raw, bumpy audio-level samples get deposited here.
+  // The globe loop SMOOTHS this into `easedExternalPulse` before rendering
+  // so spikes look like fluid waves, not a sea-urchin with hard extension
+  // spikes. Fed by:
+  //   • mic RMS while listening (real voice level)
+  //   • Aura TTS waveform RMS while speaking (real voice level)
+  //   • speechSynthesis word-boundary events (fallback path, synthetic)
   let externalPulse = 0;
+  let easedExternalPulse = 0;
   let externalPulseUntil = 0;
 
   function setExternalPulse(v, ttlMs) {
@@ -2325,14 +2328,20 @@ pushBtn.addEventListener('click', async () => {
                      : 0.30;
       pulse += (baseline - pulse) * 0.05;
 
-      // External pulse (real audio level, or word-boundary pulses) decays
-      // when its TTL elapses. Uses a fast linear fall-off so the orb feels
-      // responsive — we DON'T ease towards it, we track it live.
+      // External pulse decays past TTL.
       if (externalPulseUntil && t > externalPulseUntil) {
-        externalPulse *= 0.90;    // gentle fall
+        externalPulse *= 0.90;
         if (externalPulse < 0.02) externalPulse = 0;
       }
-      const activePulse = Math.max(pulse, externalPulse);
+      // Smooth the raw external pulse into a low-passed target the render
+      // loop actually consumes. A per-frame linear interp with k=0.09 turns
+      // the jagged RMS stream into a fluid wave — no more spike-ball /
+      // sea-urchin extension on loud syllables. ~250ms rise, ~400ms fall.
+      const targetEased = externalPulse;
+      const kEase = targetEased > easedExternalPulse ? 0.11 : 0.07;
+      easedExternalPulse += (targetEased - easedExternalPulse) * kEase;
+      if (easedExternalPulse < 0.005) easedExternalPulse = 0;
+      const activePulse = Math.max(pulse, easedExternalPulse);
 
       const cX = Math.cos(angX), sX = Math.sin(angX);
       const cY = Math.cos(angY), sY = Math.sin(angY);
@@ -2343,14 +2352,19 @@ pushBtn.addEventListener('click', async () => {
       for (let i = 0; i < NODES; i++) {
         const v = baseVerts[i];
         const seed = nodeSeeds[i];
-        // Radial wobble + voice-driven extension. Two pieces:
-        //   • sinusoidal per-node wobble that breathes regardless of voice
-        //   • direct radial PUSH proportional to externalPulse, so loud
-        //     voice physically extends nodes outward (not just wiggle)
-        const wob = (1 + Math.sin(ts * seed.freq + seed.phase)
+        // Two-scale wobble for wispy organic texture: a fast primary and a
+        // slow secondary at 0.41× frequency with offset phase. Sum has more
+        // natural variation than a single sine. Voice-driven extension uses
+        // the EASED pulse (not raw) so the orb reads as a fluid breathing
+        // form — nodes glide outward over ~250ms instead of spiking. The
+        // direct additive push is also reduced (0.08 vs 0.18) so the orb
+        // never becomes a sea urchin.
+        const w1 = Math.sin(ts * seed.freq + seed.phase);
+        const w2 = Math.sin(ts * seed.freq * 0.41 + seed.phase * 1.73) * 0.55;
+        const wob = (1 + (w1 + w2)
                         * seed.amp * (0.6 + activePulse)
-                        * (1 + externalPulse * 3.0))
-                  + externalPulse * 0.18;
+                        * (1 + easedExternalPulse * 2.2))
+                  + easedExternalPulse * 0.08;
         let x = v[0] * wob, y = v[1] * wob, z = v[2] * wob;
         // Z rotation
         let rx = x * cZ - y * sZ;
@@ -2392,7 +2406,9 @@ pushBtn.addEventListener('click', async () => {
         el.setAttribute('cx', p[0].toFixed(1));
         el.setAttribute('cy', p[1].toFixed(1));
         const twinkle = 1 + Math.sin(ts * seed.freq * 1.3 + seed.phase) * 0.35 * activePulse;
-        const voiceKick = 1 + externalPulse * 2.2;   // direct radius kick
+        // Eased kick — nodes breathe up/down smoothly with voice intensity
+        // instead of pulsing hard on every syllable.
+        const voiceKick = 1 + easedExternalPulse * 1.4;
         el.setAttribute('r', (2.0 + (p[2] + 1) * 0.9 * twinkle * voiceKick).toFixed(2));
         el.setAttribute('opacity', (0.42 + (p[2] + 1) * 0.28).toFixed(2));
       }
@@ -2500,6 +2516,9 @@ pushBtn.addEventListener('click', async () => {
     hint.textContent = 'Go ahead — I\'m listening.';
     setState('listening');
     if (banner) banner.hidden = true;
+    // Prefetch the Aura key in parallel with mic setup so the first TTS
+    // reply doesn't pay the /api/voice/deepgram_key round-trip.
+    if (typeof prefetchAuraKey === 'function') prefetchAuraKey();
 
     let stream;
     try {
@@ -2717,7 +2736,7 @@ pushBtn.addEventListener('click', async () => {
       if (isNative()) {
         try { postNative({ type: 'voice_reply_started', seq: mySeq }); } catch {}
       }
-      speakBrowser(stripForSpeech(reply), () => {
+      speak(reply, () => {
         if (active && mySeq === turnSeq) {
           setState('listening');
           transcript.classList.remove('response');
@@ -2880,8 +2899,135 @@ pushBtn.addEventListener('click', async () => {
     u.onerror = () => { clearExternalPulse(); onDone && onDone(); };
     window.speechSynthesis.speak(u);
   }
+
+  // --- Deepgram Aura-2 TTS ---
+  // Premium voice ("aura-2-orion-en" is Liam's preferred — warm masculine).
+  // We fetch the full MP3 from Deepgram's /v1/speak endpoint (synthesis is
+  // fast enough that non-streaming feels instant with Haiku replies), pipe
+  // it through an AudioContext with an AnalyserNode so the orb reacts to
+  // the actual TTS waveform, and play it back via an HTMLAudioElement.
+  // On any failure (no key, network, API error) fall back to speakBrowser
+  // so voice never goes silent — quality dips to the system voice only in
+  // that degraded case.
+  let _auraKey = null;
+  let _auraVoice = 'aura-2-orion-en';
+  let _auraAudio = null;
+  let _auraCtx = null;
+  let _auraRaf = 0;
+
+  async function _loadAuraKey() {
+    if (_auraKey) return _auraKey;
+    try {
+      const r = await api('GET', '/api/voice/deepgram_key');
+      if (!r.ok) return null;
+      _auraKey = (await r.json()).key || null;
+      return _auraKey;
+    } catch { return null; }
+  }
+  // Prefetch the key at voice-mode start so the first Aura call doesn't
+  // pay the round-trip.
+  function prefetchAuraKey() { _loadAuraKey(); }
+  window.prefetchAuraKey = prefetchAuraKey;
+
+  async function speakAura(text, onDone) {
+    const cleaned = stripForSpeech(text);
+    if (!cleaned) { onDone && onDone(); return; }
+    const key = await _loadAuraKey();
+    if (!key) { return speakBrowser(text, onDone); }
+
+    let res;
+    try {
+      res = await fetch(
+        'https://api.deepgram.com/v1/speak?model=' + encodeURIComponent(_auraVoice),
+        {
+          method: 'POST',
+          headers: {
+            'Authorization': 'Token ' + key,
+            'Content-Type': 'application/json',
+            'Accept': 'audio/mpeg',
+          },
+          body: JSON.stringify({ text: cleaned }),
+        },
+      );
+    } catch (e) {
+      console.warn('aura fetch failed:', e);
+      return speakBrowser(text, onDone);
+    }
+    if (!res.ok) {
+      console.warn('aura non-200:', res.status);
+      return speakBrowser(text, onDone);
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    _auraAudio = audio;
+
+    // Tee the audio through an analyser so the orb reacts to the actual
+    // waveform. Must connect to destination too or nothing plays.
+    try {
+      if (!_auraCtx) _auraCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (_auraCtx.state === 'suspended') await _auraCtx.resume();
+      const source = _auraCtx.createMediaElementSource(audio);
+      const analyser = _auraCtx.createAnalyser();
+      analyser.fftSize = 512;
+      analyser.smoothingTimeConstant = 0.65;
+      source.connect(analyser);
+      source.connect(_auraCtx.destination);
+      const timeBuf = new Uint8Array(analyser.fftSize);
+
+      function tick() {
+        if (!_auraAudio || _auraAudio.paused || _auraAudio.ended) {
+          _auraRaf = 0;
+          return;
+        }
+        analyser.getByteTimeDomainData(timeBuf);
+        let sum = 0;
+        for (let i = 0; i < timeBuf.length; i++) {
+          const d = timeBuf[i] - 128;
+          sum += d * d;
+        }
+        const rms = Math.sqrt(sum / timeBuf.length) / 128;
+        const shaped = Math.min(1, Math.pow(rms * 2.6, 0.65));
+        if (shaped > 0.02) setExternalPulse(shaped, 140);
+        _auraRaf = requestAnimationFrame(tick);
+      }
+      audio.addEventListener('play', () => { _auraRaf = requestAnimationFrame(tick); });
+    } catch (e) {
+      console.warn('aura analyser setup failed (audio will still play):', e);
+    }
+
+    const cleanup = () => {
+      if (_auraRaf) cancelAnimationFrame(_auraRaf);
+      _auraRaf = 0;
+      try { URL.revokeObjectURL(url); } catch {}
+      if (_auraAudio === audio) _auraAudio = null;
+      clearExternalPulse();
+    };
+    audio.addEventListener('ended', () => { cleanup(); onDone && onDone(); });
+    audio.addEventListener('error', () => { cleanup(); onDone && onDone(); });
+
+    try {
+      await audio.play();
+    } catch (e) {
+      cleanup();
+      console.warn('aura play failed — falling back:', e);
+      return speakBrowser(text, onDone);
+    }
+  }
+
+  // Unified entry point: tries Aura first, degrades to speechSynthesis.
+  function speak(text, onDone) {
+    return speakAura(text, onDone);
+  }
+
   function stopSpeakingIfAny() {
     try { if ('speechSynthesis' in window) window.speechSynthesis.cancel(); } catch {}
+    if (_auraAudio) {
+      try { _auraAudio.pause(); } catch {}
+      try { _auraAudio.currentTime = _auraAudio.duration || 0; } catch {}
+      _auraAudio = null;
+    }
+    if (_auraRaf) { cancelAnimationFrame(_auraRaf); _auraRaf = 0; }
     clearExternalPulse();
   }
 
