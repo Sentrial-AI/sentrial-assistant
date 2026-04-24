@@ -781,42 +781,48 @@
     z-index: 1;
   }
 
-  /* Node-web globe — rendered in SVG, rotated via JS requestAnimationFrame. */
+  /* Node-web globe — rendered in SVG, rotated via JS requestAnimationFrame.
+     Colors and glow are driven by CSS custom properties so the JS loop can
+     push per-state + interrupt bursts without stomping on the layout engine. */
   .globe-svg {
     width: 100%; height: 100%;
     overflow: visible;
-    transition: filter 0.6s ease;
-    filter: drop-shadow(0 0 22px rgba(94,234,212,0.45));
+    transition: filter 0.8s ease;
+    filter: drop-shadow(0 0 22px var(--orb-glow, rgba(94,234,212,0.42)));
   }
-  .voice-mode.state-speaking .globe-svg {
-    filter: drop-shadow(0 0 26px rgba(251, 146, 60, 0.55));
+  .voice-mode.state-listening { --orb-glow: rgba(94, 234, 212, 0.55); }
+  .voice-mode.state-speaking  { --orb-glow: rgba(251, 146, 60, 0.55); }
+  .voice-mode.state-thinking  { --orb-glow: rgba(148, 163, 184, 0.32); }
+  .voice-mode.state-idle      { --orb-glow: rgba(94, 234, 212, 0.30); }
+  /* Quick flash burst on interrupt — bright ring, fades out. */
+  .voice-mode.flash-interrupt .globe-svg {
+    filter: drop-shadow(0 0 40px rgba(94, 234, 212, 0.95));
+    animation: orb-flash 520ms ease-out;
   }
-  .voice-mode.state-thinking .globe-svg {
-    filter: drop-shadow(0 0 10px rgba(100,116,139,0.3));
+  @keyframes orb-flash {
+    0%   { filter: drop-shadow(0 0 50px rgba(94,234,212,1)); }
+    100% { filter: drop-shadow(0 0 22px var(--orb-glow, rgba(94,234,212,0.42))); }
   }
-  .voice-mode.state-idle .globe-svg { filter: drop-shadow(0 0 16px rgba(94,234,212,0.28)); }
 
   .edge-line {
-    stroke: rgba(94, 234, 212, 0.55);
+    stroke: var(--orb-edge, rgba(94, 234, 212, 0.55));
     stroke-width: 0.7;
     fill: none;
-    transition: stroke 0.6s ease;
+    transition: stroke 0.8s ease;
   }
-  .voice-mode.state-speaking .edge-line { stroke: rgba(251, 146, 60, 0.6); }
-  .voice-mode.state-thinking .edge-line { stroke: rgba(100, 116, 139, 0.35); }
+  .voice-mode.state-listening { --orb-edge: rgba(94, 234, 212, 0.55); }
+  .voice-mode.state-speaking  { --orb-edge: rgba(251, 146, 60, 0.58); }
+  .voice-mode.state-thinking  { --orb-edge: rgba(148, 163, 184, 0.32); }
+  .voice-mode.state-idle      { --orb-edge: rgba(94, 234, 212, 0.32); }
 
   .node-circle {
-    fill: #5eead4;
-    transition: fill 0.6s ease;
+    fill: var(--orb-node, #5eead4);
+    transition: fill 0.8s ease;
   }
-  .voice-mode.state-speaking .node-circle { fill: #fb923c; }
-  .voice-mode.state-thinking .node-circle { fill: #94a3b8; }
-
-  /* Overall breathe layered over node rotation */
-  .voice-mode.state-listening .orb-wrap { animation: orb-breathe 2.6s ease-in-out infinite; }
-  .voice-mode.state-speaking  .orb-wrap { animation: orb-breathe-fast 1.2s ease-in-out infinite; }
-  @keyframes orb-breathe { 0%,100% { transform: scale(1); } 50% { transform: scale(1.05); } }
-  @keyframes orb-breathe-fast { 0%,100% { transform: scale(1); } 50% { transform: scale(1.09); } }
+  .voice-mode.state-listening { --orb-node: #5eead4; }
+  .voice-mode.state-speaking  { --orb-node: #fb923c; }
+  .voice-mode.state-thinking  { --orb-node: #94a3b8; }
+  .voice-mode.state-idle      { --orb-node: #5eead4; }
 
   .voice-state-label {
     margin-top: 32px;
@@ -1466,31 +1472,65 @@ pushBtn.addEventListener('click', async () => {
   let mobileMode = false;
 
   // ---- Node-web globe ----
-  const NODES = 32;
-  const NEIGHBORS = 3;
-  const RADIUS = 110;
+  //
+  // Three-axis rotation, not one. Each axis has:
+  //   - a target angular velocity (driven by state)
+  //   - a current angular velocity that eases toward the target (loose feel)
+  //   - a slow sinusoidal drift on the TARGET itself (so it never settles)
+  // State changes apply a torque impulse to current velocities — the sphere
+  // lurches before settling into the new rhythm. Interrupt (speaking→listening
+  // while audio was playing) amplifies the impulse + triggers a CSS flash.
+  //
+  // Per-node scale gets gentle noise so the surface isn't a geometric ideal —
+  // it wobbles. The noise seed per node keeps each one on its own phase.
+  const NODES = 54;
+  const NEIGHBORS = 4;
+  const RADIUS = 112;
   const NS = 'http://www.w3.org/2000/svg';
   const edgesG = document.getElementById('globe-edges');
   const nodesG = document.getElementById('globe-nodes');
+
   let baseVerts = [];
+  let nodeSeeds = [];            // per-node phase offset for surface wobble
   let edgeIdx = [];
   let edgeEls = [];
   let nodeEls = [];
-  let rotY = 0;
-  let rotSpeed = 0.9;
+
+  // Euler angles, in radians — current rotation state.
+  let angX = 0.28, angY = 0, angZ = 0;
+  // Angular velocities. cur is what's actually applied each frame; tgt is
+  // where they're heading. cur eases toward tgt for a loose, organic ramp.
+  let velX = 0, velY = 0.9, velZ = 0;
+  let tgtX = 0, tgtY = 0.9, tgtZ = 0;
   let rafId = null;
+
+  // State targets (deg-ish per frame at 60fps; multiplied by dt below).
+  // X and Z axes drift slowly; Y carries the main spin and flips on speaking.
+  const STATE_VELS = {
+    listening: { x:  0.15, y:  0.85, z: -0.08 },
+    speaking:  { x: -0.22, y: -1.45, z:  0.18 },
+    thinking:  { x:  0.05, y:  0.28, z:  0.04 },
+    idle:      { x:  0.06, y:  0.48, z: -0.03 },
+  };
 
   function buildGlobe() {
     if (!edgesG || !nodesG) return;
     baseVerts = [];
+    nodeSeeds = [];
+    // Fibonacci lattice — evenly distributed points on a unit sphere.
     const golden = Math.PI * (3 - Math.sqrt(5));
     for (let i = 0; i < NODES; i++) {
       const y = 1 - (i / (NODES - 1)) * 2;
       const r = Math.sqrt(Math.max(0, 1 - y * y));
       const theta = golden * i;
       baseVerts.push([Math.cos(theta) * r, y, Math.sin(theta) * r]);
+      nodeSeeds.push({
+        phase: (i * 12.9898) % (Math.PI * 2),
+        freq:  0.6 + ((i * 78.233) % 1) * 0.9,   // 0.6 .. 1.5 Hz-ish
+        amp:   0.010 + ((i * 43.758) % 1) * 0.022, // radial jitter
+      });
     }
-    // k-nearest edges
+    // k-nearest edges — same as before, but with more nodes this makes a denser web.
     const set = new Set();
     for (let i = 0; i < NODES; i++) {
       const ds = [];
@@ -1525,30 +1565,71 @@ pushBtn.addEventListener('click', async () => {
     });
   }
 
+  // Overall pulse intensity (0..1). State-driven, bumped by impulses, decays.
+  let pulse = 0.35;
+
   function startGlobeLoop() {
     if (rafId) return;
     let last = performance.now();
-    const rotX = 0.28;
-    const cosX = Math.cos(rotX), sinX = Math.sin(rotX);
     const frame = (t) => {
-      const dt = Math.min(80, t - last) / 16.67;
+      const dt = Math.min(80, t - last) / 16.67;  // frames at 60fps
       last = t;
-      rotY += 0.01 * rotSpeed * dt;
-      const cosY = Math.cos(rotY), sinY = Math.sin(rotY);
-      // Project
+      const ts = t * 0.001;                        // seconds since origin
+
+      // Slow sinusoidal wobble applied to target velocities — the sphere
+      // never rotates perfectly steadily, it breathes direction.
+      const wobX = Math.sin(ts * 0.37) * 0.08;
+      const wobY = Math.sin(ts * 0.23 + 1.7) * 0.12;
+      const wobZ = Math.sin(ts * 0.51 + 3.1) * 0.06;
+
+      // Ease current velocity toward target + wobble. Low k = loose.
+      const k = 0.045;
+      velX += ((tgtX + wobX) - velX) * k;
+      velY += ((tgtY + wobY) - velY) * k;
+      velZ += ((tgtZ + wobZ) - velZ) * k;
+
+      angX += 0.01 * velX * dt;
+      angY += 0.01 * velY * dt;
+      angZ += 0.01 * velZ * dt;
+
+      // Pulse decays toward a state baseline every frame.
+      const baseline = (currentState === 'speaking') ? 0.58
+                     : (currentState === 'listening') ? 0.40
+                     : (currentState === 'thinking')  ? 0.18
+                     : 0.30;
+      pulse += (baseline - pulse) * 0.05;
+
+      const cX = Math.cos(angX), sX = Math.sin(angX);
+      const cY = Math.cos(angY), sY = Math.sin(angY);
+      const cZ = Math.cos(angZ), sZ = Math.sin(angZ);
+
+      // Project each node through ZX Y rotation order then perspective.
       const proj = new Array(NODES);
       for (let i = 0; i < NODES; i++) {
         const v = baseVerts[i];
+        const seed = nodeSeeds[i];
+        // Radial wobble — pushes each vertex in/out off the unit sphere so the
+        // surface isn't a geometric ideal. Amplitude scales with pulse.
+        const wob = 1 + Math.sin(ts * seed.freq + seed.phase) * seed.amp * (0.6 + pulse);
+        let x = v[0] * wob, y = v[1] * wob, z = v[2] * wob;
+        // Z rotation
+        let rx = x * cZ - y * sZ;
+        let ry = x * sZ + y * cZ;
+        x = rx; y = ry;
         // X rotation
-        const ry = v[1] * cosX - v[2] * sinX;
-        const rz = v[1] * sinX + v[2] * cosX;
+        let ty = y * cX - z * sX;
+        let tz = y * sX + z * cX;
+        y = ty; z = tz;
         // Y rotation
-        const x = v[0] * cosY + rz * sinY;
-        const z = -v[0] * sinY + rz * cosY;
-        // Perspective
-        const f = 1.5 / (1.5 - z * 0.35);
-        proj[i] = [x * RADIUS * f, ry * RADIUS * f, z];
+        let qx = x * cY + z * sY;
+        let qz = -x * sY + z * cY;
+        x = qx; z = qz;
+        // Perspective (mild — enough to sell 3D without fisheye)
+        const f = 1.6 / (1.6 - z * 0.32);
+        proj[i] = [x * RADIUS * f, y * RADIUS * f, z];
       }
+
+      // Edges: opacity + thickness scale with average depth (back edges recede).
       for (let i = 0; i < edgeIdx.length; i++) {
         const [a, b] = edgeIdx[i];
         const pa = proj[a], pb = proj[b];
@@ -1558,15 +1639,18 @@ pushBtn.addEventListener('click', async () => {
         el.setAttribute('x2', pb[0].toFixed(1));
         el.setAttribute('y2', pb[1].toFixed(1));
         const az = (pa[2] + pb[2]) * 0.5;
-        el.setAttribute('opacity', (0.18 + (az + 1) * 0.32).toFixed(2));
+        el.setAttribute('opacity', (0.14 + (az + 1) * 0.34).toFixed(2));
       }
+      // Nodes: radius scales with depth + pulse; opacity with depth.
       for (let i = 0; i < NODES; i++) {
         const p = proj[i];
+        const seed = nodeSeeds[i];
         const el = nodeEls[i];
         el.setAttribute('cx', p[0].toFixed(1));
         el.setAttribute('cy', p[1].toFixed(1));
-        el.setAttribute('r', (2.2 + (p[2] + 1) * 0.85).toFixed(2));
-        el.setAttribute('opacity', (0.45 + (p[2] + 1) * 0.28).toFixed(2));
+        const twinkle = 1 + Math.sin(ts * seed.freq * 1.3 + seed.phase) * 0.35 * pulse;
+        el.setAttribute('r', (2.0 + (p[2] + 1) * 0.9 * twinkle).toFixed(2));
+        el.setAttribute('opacity', (0.42 + (p[2] + 1) * 0.28).toFixed(2));
       }
       rafId = requestAnimationFrame(frame);
     };
@@ -1575,25 +1659,48 @@ pushBtn.addEventListener('click', async () => {
   function stopGlobeLoop() {
     if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
   }
-  function setGlobeSpeed(state) {
-    // Direction flips on state change. Speaking goes the other way.
-    if (state === 'listening') rotSpeed = 0.9;
-    else if (state === 'speaking') rotSpeed = -1.5;
-    else if (state === 'thinking') rotSpeed = 0.32;
-    else rotSpeed = 0.55;
+
+  // Apply a torque impulse — additive velocity kick that the easing then
+  // absorbs over ~500ms. Use magnitude=1 for normal state change, >1 for
+  // interrupts (the sphere lurches harder).
+  function applyImpulse(magnitude) {
+    const m = magnitude || 1;
+    // Random-ish directional kick so impulses don't always look the same.
+    const r = (Math.random() * 2 - 1);
+    velX += (0.9 * m) * (r * 0.7 + 0.3);
+    velY += (1.6 * m) * (Math.random() > 0.5 ? 1 : -1);
+    velZ += (0.6 * m) * (Math.random() * 2 - 1);
+    pulse = Math.min(1, pulse + 0.45 * m);
+  }
+
+  function setGlobeState(state) {
+    const vels = STATE_VELS[state] || STATE_VELS.idle;
+    tgtX = vels.x; tgtY = vels.y; tgtZ = vels.z;
   }
 
   buildGlobe();
 
   function setState(name) {
     if (!mode) return;
+    const prev = currentState;
     currentState = name;
+    // Interrupt = user spoke while Sentrial was mid-reply (speaking → listening/thinking).
+    const isInterrupt = (prev === 'speaking' && (name === 'listening' || name === 'thinking'));
+
     mode.className = 'voice-mode state-' + name;
     if (name === 'listening')  stateLabel.textContent = 'Listening';
     else if (name === 'thinking') stateLabel.textContent = 'Thinking';
     else if (name === 'speaking') stateLabel.textContent = 'Speaking';
     else stateLabel.textContent = 'Ready';
-    setGlobeSpeed(name);
+
+    setGlobeState(name);
+    if (prev && prev !== name) {
+      applyImpulse(isInterrupt ? 2.2 : 1);
+      if (isInterrupt) {
+        mode.classList.add('flash-interrupt');
+        setTimeout(() => mode.classList.remove('flash-interrupt'), 520);
+      }
+    }
   }
 
   function show() {

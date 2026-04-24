@@ -18,10 +18,24 @@ accessible via dg.listen.v1.connect(**kwargs).
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from typing import Callable, Optional
 
 log = logging.getLogger(__name__)
+
+
+def _ensure_ssl_certs() -> None:
+    """Belt-and-suspenders: point SSL at certifi if not already configured."""
+    if os.environ.get("SSL_CERT_FILE"):
+        return
+    try:
+        import certifi
+        bundle = certifi.where()
+    except Exception:  # noqa: BLE001
+        return
+    os.environ["SSL_CERT_FILE"] = bundle
+    os.environ.setdefault("REQUESTS_CA_BUNDLE", bundle)
 
 SAMPLE_RATE = 16000
 CHANNELS = 1
@@ -70,6 +84,7 @@ class VoiceSession:
     # ------------------- internals -------------------
 
     def _run(self) -> None:
+        _ensure_ssl_certs()
         try:
             from deepgram import DeepgramClient
             from deepgram.listen.v1.types.listen_v1results import ListenV1Results

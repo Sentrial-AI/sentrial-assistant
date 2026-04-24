@@ -43,9 +43,30 @@ def _require_mac():
         sys.exit(1)
 
 
+def _ensure_ssl_certs() -> None:
+    """
+    Point Python's default SSL context at certifi's CA bundle.
+
+    Fixes CERTIFICATE_VERIFY_FAILED for Deepgram WS (listen) and Aura TTS (REST)
+    on Homebrew / python.org installs that don't ship with a trusted store.
+    Env vars are honored by `ssl.create_default_context()` (used by `websockets`)
+    and by `requests`/`urllib3`, so both the STT socket and the TTS HTTP call
+    benefit.
+    """
+    try:
+        import certifi
+        bundle = certifi.where()
+    except Exception:  # noqa: BLE001
+        return
+    for var in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE"):
+        os.environ.setdefault(var, bundle)
+
+
 def run():
     _require_mac()
     logging.basicConfig(level=logging.INFO)
+
+    _ensure_ssl_certs()
 
     # Diagnostic: log which Python is running and whether voice deps import.
     # If Sentrial launched via launchd but deepgram is missing, the logs make it obvious.
