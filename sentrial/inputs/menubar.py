@@ -207,6 +207,24 @@ def run():
             # (used to hand Sentrial's reply text back for TTS playback in Voice Mode).
             config.userContentController().addScriptMessageHandler_name_(self, "sentrial")
 
+            # Enable media capture (mic) inside the WebView. These are private
+            # WKPreferences switches (the same ones Safari flips) and the exact
+            # key set drifts between macOS versions, so set each independently
+            # and log which ones aren't supported rather than bailing on the
+            # first unknown key. Only `mediaDevicesEnabled` is strictly required
+            # for getUserMedia to work; the others are nice-to-have.
+            prefs = config.preferences()
+            for key, val in (
+                ("mediaDevicesEnabled", True),
+                ("peerConnectionEnabled", True),
+                ("mediaStreamEnabled", True),
+                ("mockCaptureDevicesEnabled", False),
+            ):
+                try:
+                    prefs.setValue_forKey_(val, key)
+                except Exception as e:  # noqa: BLE001
+                    log.debug("WKPreferences key not supported: %s (%s)", key, e)
+
             # Note: we don't proactively wipe WKWebsiteDataStore caches here. An earlier
             # version of this code called removeDataOfTypes_:modifiedSince_:completionHandler_
             # with None as the completion handler — PyObjC can't marshal that into a valid
@@ -220,6 +238,12 @@ def run():
             self._webview.setAutoresizingMask_(
                 NSViewWidthSizable | NSViewHeightSizable
             )
+            # Self is the UIDelegate so WKWebView's
+            # webView:requestMediaCapturePermissionForOrigin:initiatedByFrame:type:decisionHandler:
+            # routes to us and we can auto-grant microphone. PyObjC dispatches
+            # the Obj-C selector `webView:requestMediaCapturePermissionForOrigin:...`
+            # to the Python method below.
+            self._webview.setUIDelegate_(self)
             self._container.addSubview_(self._webview)
             # Force a fresh fetch on first load (belt-and-suspenders with cache clear above)
             req = NSURLRequest.requestWithURL_cachePolicy_timeoutInterval_(
@@ -405,16 +429,13 @@ def run():
             )
 
         def _voice_start(self):
-            api_key = self._nova3_key()
-            if not api_key:
-                log.warning("no NOVA3_API_KEY — voice disabled")
-                self._inject_js(
-                    'window.sentrialVoiceError && window.sentrialVoiceError('
-                    '"Set NOVA3_API_KEY — see sentrial setup")'
-                )
-                return
-
-            # Bring the popover or panel up so the user sees the live transcript
+            """
+            Right-Option hotkey — open the popover, hand control to the PWA's
+            browser-native voice path (WKWebView's getUserMedia + AudioWorklet
+            streaming straight to Deepgram). No Python-side mic, no TCC
+            subprocess drama.
+            """
+            # Surface the popover / panel so the user sees the globe
             if self._detached:
                 if self._panel is not None and not self._panel.isVisible():
                     self._panel.makeKeyAndOrderFront_(None)
@@ -425,68 +446,41 @@ def run():
                         btn.bounds(), btn, NSRectEdgeMinY
                     )
             NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
-
+            # sentrialVoiceStart() in the PWA now does the browser-native capture.
             self._inject_js("window.sentrialVoiceStart && window.sentrialVoiceStart()")
-
-            def on_interim(text):
-                self._inject_js(
-                    f"window.sentrialVoiceUpdate && "
-                    f"window.sentrialVoiceUpdate({json.dumps(text)})"
-                )
-
-            def on_final(text):
-                # Per-utterance — submit immediately through the PWA.
-                self._inject_js(
-                    f"window.sentrialVoiceTurn && "
-                    f"window.sentrialVoiceTurn({json.dumps(text)})"
-                )
-
-            def on_error(err):
-                self._inject_js(
-                    f"window.sentrialVoiceError && "
-                    f"window.sentrialVoiceError({json.dumps(err)})"
-                )
-                # Clear the dead session so the next Right-Option tap starts fresh.
-                self._voice = None
-
-            try:
-                self._voice = VoiceSession(
-                    api_key=api_key,
-                    on_interim=on_interim,
-                    on_final=on_final,
-                    on_error=on_error,
-                )
-                self._voice.start()
-                log.info("voice session started (continuous mode)")
-            except Exception as e:  # noqa: BLE001
-                log.warning("voice start failed: %s", e)
-                self._inject_js(
-                    f"window.sentrialVoiceError && "
-                    f"window.sentrialVoiceError({json.dumps(str(e))})"
-                )
-                self._voice = None
+            self._voice = True  # truthy sentinel so _toggle_voice_mode flips
+            log.info("voice mode on (browser-native path)")
 
         def _voice_stop(self):
             if self._voice is None:
                 return
-            try:
-                self._voice.stop()
-            except Exception as e:  # noqa: BLE001
-                log.warning("voice stop error: %s", e)
             self._voice = None
-            # Stop any TTS still playing
             try:
                 tts_mod.stop_playback()
             except Exception:  # noqa: BLE001
                 pass
-            log.info("voice session ended")
             self._inject_js("window.sentrialVoiceExit && window.sentrialVoiceExit()")
+            log.info("voice mode off")
 
         def _inject_js(self, script: str) -> None:
             try:
                 self._webview.evaluateJavaScript_completionHandler_(script, None)
             except Exception as e:  # noqa: BLE001
                 log.debug("JS inject failed: %s", e)
+
+        # ---- WKUIDelegate: auto-grant mic to our own PWA origin ----
+        # Signature matches Obj-C: webView:requestMediaCapturePermissionForOrigin:
+        #   initiatedByFrame:type:decisionHandler:
+        # Decision values: 0=prompt 1=grant 2=deny (WKPermissionDecision).
+        def webView_requestMediaCapturePermissionForOrigin_initiatedByFrame_type_decisionHandler_(
+            self, _webview, _origin, _frame, _media_type, decision_handler,
+        ):
+            try:
+                # 1 = WKPermissionDecisionGrant
+                decision_handler(1)
+                log.info("WKUIDelegate: granted media capture")
+            except Exception as e:  # noqa: BLE001
+                log.warning("WKUIDelegate grant failed: %s", e)
 
         # ---- WKScriptMessageHandler: PWA → native ----
         def userContentController_didReceiveScriptMessage_(self, _controller, message):

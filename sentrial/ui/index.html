@@ -1725,6 +1725,7 @@ pushBtn.addEventListener('click', async () => {
     setState('idle');
     stopGlobeLoop();
     stopSpeakingIfAny();
+    stopBrowserVoice();
     postNative({ type: 'voice_exit' });
     if (mobileRecog) {
       try { mobileRecog.stop(); } catch {}
@@ -1747,15 +1748,147 @@ pushBtn.addEventListener('click', async () => {
     } catch { return false; }
   }
 
-  // --- Mac bridge handlers (called by menubar.py) ---
+  // --- Browser-native mic capture (getUserMedia → AudioWorklet → Deepgram WS) ---
+  //
+  // Used on both Mac (WKWebView) and mobile. Replaces the ad-hoc native Swift
+  // helper path that hit macOS TCC attribution problems: WebKit's media
+  // pipeline owns the mic permission, so the user gets a clean WebKit prompt
+  // attributed to the WebView's host app, and audio streams straight to
+  // Deepgram without any Python-side capture.
+  let voiceSession = null;
 
-  window.sentrialVoiceStart = function () {
+  async function startBrowserVoice() {
+    if (voiceSession) return;
     activateTab('chat');
     show();
     transcript.textContent = '';
     hint.textContent = 'Go ahead — I\'m listening.';
     setState('listening');
     if (banner) banner.hidden = true;
+
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
+    } catch (e) {
+      window.sentrialVoiceError('Microphone access denied: ' + (e && e.message || e));
+      return;
+    }
+
+    let dgKey;
+    try {
+      const r = await api('GET', '/api/voice/deepgram_key');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      dgKey = (await r.json()).key;
+      if (!dgKey) throw new Error('empty key');
+    } catch (e) {
+      stream.getTracks().forEach(t => t.stop());
+      window.sentrialVoiceError('Deepgram key fetch failed: ' + e.message);
+      return;
+    }
+
+    const params = new URLSearchParams({
+      model: 'nova-3',
+      language: 'en-US',
+      encoding: 'linear16',
+      channels: '1',
+      sample_rate: '16000',
+      interim_results: 'true',
+      punctuate: 'true',
+      smart_format: 'true',
+      endpointing: '300',
+    });
+    // Deepgram lets us auth via Sec-WebSocket-Protocol because browsers can't
+    // set the Authorization header. Subprotocol form: ["token", "<API_KEY>"].
+    const ws = new WebSocket(
+      'wss://api.deepgram.com/v1/listen?' + params.toString(),
+      ['token', dgKey],
+    );
+    ws.binaryType = 'arraybuffer';
+
+    ws.addEventListener('message', (ev) => {
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch { return; }
+      if (msg.type !== 'Results') return;
+      const alt = msg.channel && msg.channel.alternatives && msg.channel.alternatives[0];
+      const sentence = (alt && alt.transcript || '').trim();
+      if (!sentence) return;
+      if (msg.is_final || msg.speech_final) {
+        window.sentrialVoiceTurn(sentence);
+      } else {
+        window.sentrialVoiceUpdate(sentence);
+      }
+    });
+    ws.addEventListener('error', () => {
+      window.sentrialVoiceError('Deepgram connection error');
+    });
+
+    // AudioContext at 16 kHz — Safari 14.1+ and Chrome respect sampleRate in
+    // the constructor and the resampler is transparent. Graph:
+    //   MediaStreamSource → AudioWorkletNode → (port.postMessage) → ws.send
+    const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+    const source = ctx.createMediaStreamSource(stream);
+
+    const workletSrc = `
+      class PCMEmitter extends AudioWorkletProcessor {
+        process(inputs) {
+          const ch = inputs[0] && inputs[0][0];
+          if (!ch) return true;
+          const pcm = new Int16Array(ch.length);
+          for (let i = 0; i < ch.length; i++) {
+            const s = Math.max(-1, Math.min(1, ch[i]));
+            pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+          }
+          this.port.postMessage(pcm.buffer, [pcm.buffer]);
+          return true;
+        }
+      }
+      registerProcessor('pcm-emitter', PCMEmitter);
+    `;
+    let node;
+    try {
+      const blobURL = URL.createObjectURL(new Blob([workletSrc], { type: 'application/javascript' }));
+      await ctx.audioWorklet.addModule(blobURL);
+      node = new AudioWorkletNode(ctx, 'pcm-emitter');
+    } catch (e) {
+      stream.getTracks().forEach(t => t.stop());
+      try { ws.close(); } catch {}
+      try { ctx.close(); } catch {}
+      window.sentrialVoiceError('AudioWorklet init failed: ' + (e && e.message || e));
+      return;
+    }
+    node.port.onmessage = (ev) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        try { ws.send(ev.data); } catch {}
+      }
+    };
+    // Connect source → worklet. We do NOT connect node → destination (would
+    // echo the mic out of the speakers).
+    source.connect(node);
+
+    voiceSession = { stream, ctx, ws, node };
+  }
+
+  function stopBrowserVoice() {
+    if (!voiceSession) return;
+    const { stream, ctx, ws } = voiceSession;
+    voiceSession = null;
+    try {
+      // Tell Deepgram we're done so it flushes remaining transcripts.
+      if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'CloseStream' }));
+    } catch {}
+    try { ws.close(); } catch {}
+    try { stream.getTracks().forEach(t => t.stop()); } catch {}
+    try { ctx.close(); } catch {}
+  }
+
+  // --- Mac bridge handlers (called by menubar.py) ---
+
+  window.sentrialVoiceStart = function () {
+    // Native (Right-Option hotkey) → kick off browser mic capture. Ignore
+    // return value; errors surface through sentrialVoiceError.
+    startBrowserVoice();
   };
 
   window.sentrialVoiceUpdate = function (text) {
@@ -1929,15 +2062,11 @@ pushBtn.addEventListener('click', async () => {
     }
   }
 
-  // Mic button: on Mac, native hotkey owns voice — nudge user. On mobile/browser, toggle mobile voice.
+  // Mic button toggles browser voice on both Mac and mobile. One code path.
   if (micBtn) {
     micBtn.addEventListener('click', () => {
-      if (isNative()) {
-        // On Mac popover, prefer the Right-Option hotkey — but allow click to toggle too
-        if (active) hide(); else postNative({ type: 'voice_request_start' });
-        return;
-      }
-      if (active) hide(); else startMobileVoice();
+      if (active) hide();
+      else startBrowserVoice();
     });
   }
 

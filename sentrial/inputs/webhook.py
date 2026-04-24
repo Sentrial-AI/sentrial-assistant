@@ -139,6 +139,19 @@ def build_app(
             raise HTTPException(status_code=403, detail="bootstrap only allowed from localhost")
         return {"token": kc.ensure_token()}
 
+    @api.get("/api/voice/deepgram_key", dependencies=[Depends(require_auth)])
+    async def deepgram_key():
+        """
+        Hand the Deepgram listen API key to the authed browser so it can open
+        a WebSocket from the WKWebView directly. Avoids routing PCM through
+        our server and sidesteps the macOS TCC problem for bundled Python.
+        The browser is authenticated so this is scoped to the owner.
+        """
+        k = kc.get("nova3_api_key") or kc.get("deepgram_api_key") or os.environ.get("NOVA3_API_KEY")
+        if not k:
+            raise HTTPException(status_code=503, detail="no deepgram key configured")
+        return {"key": k}
+
     @api.get("/api/push/vapid")
     async def vapid_public():
         key = kc.get("vapid_public_key")
