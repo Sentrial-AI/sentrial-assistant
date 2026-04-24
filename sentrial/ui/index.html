@@ -236,11 +236,109 @@
     color: var(--text-3); text-transform: uppercase;
   }
   .msg.user .msg-role { color: var(--accent); }
+  .msg { position: relative; }
   .msg-body { white-space: pre-wrap; word-wrap: break-word; line-height: 1.65; }
   .msg.user .msg-body {
     background: var(--surface);
     padding: 12px 16px; border-radius: 12px; align-self: flex-start;
     max-width: 85%; border: 1px solid var(--border);
+  }
+  /* Assistant messages render markdown → block tags handle spacing, so
+     pre-wrap is unnecessary (and would duplicate blank-line gaps). */
+  .msg.sentrial .msg-body { white-space: normal; }
+  /* Markdown elements inside an assistant message */
+  .md-p    { margin: 0 0 10px 0; }
+  .md-p:last-child { margin-bottom: 0; }
+  .md-h    { margin: 18px 0 8px; font-weight: 600; letter-spacing: -0.01em; }
+  h1.md-h  { font-size: 20px; }
+  h2.md-h  { font-size: 17px; }
+  h3.md-h  { font-size: 15px; color: var(--text-2); }
+  h4.md-h  { font-size: 14px; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.06em; }
+  .md-list { margin: 4px 0 10px; padding-left: 22px; }
+  .md-list li { margin: 2px 0; line-height: 1.55; }
+  ol.md-list { padding-left: 26px; }
+  .md-quote {
+    border-left: 2px solid var(--border-strong);
+    margin: 6px 0 10px; padding: 2px 12px;
+    color: var(--text-2); font-style: italic;
+  }
+  .md-gap  { height: 6px; }
+  .md-ic   {
+    font-family: var(--mono); font-size: 0.92em;
+    background: var(--elevated); color: var(--text);
+    padding: 1px 6px; border-radius: 4px;
+  }
+  .md-code {
+    font-family: var(--mono); font-size: 12.5px;
+    background: var(--elevated); color: var(--text);
+    padding: 10px 14px; border-radius: 8px;
+    margin: 6px 0 10px;
+    overflow-x: auto; line-height: 1.5;
+  }
+  .md-code code { background: transparent; padding: 0; }
+  .msg-body strong { font-weight: 600; color: var(--text); }
+  .msg-body em { font-style: italic; color: var(--text-2); }
+  .msg-body a {
+    color: var(--accent); text-decoration: underline;
+    text-decoration-color: rgba(94,234,212,0.4); text-underline-offset: 2px;
+  }
+  .msg-body a:hover { text-decoration-color: var(--accent); }
+  /* Copy button tucked into the top-right of each message */
+  .msg-copy {
+    position: absolute; top: 0; right: 0;
+    width: 28px; height: 28px;
+    border: none; background: transparent;
+    color: var(--text-faint); cursor: pointer;
+    font-size: 14px; line-height: 1;
+    opacity: 0; transition: opacity 0.15s, color 0.15s;
+    border-radius: 6px; padding: 0;
+  }
+  .msg:hover .msg-copy { opacity: 1; }
+  .msg-copy:hover { color: var(--text); background: var(--surface); }
+
+  /* Keyboard shortcut help overlay */
+  .kb-help {
+    position: fixed; inset: 0; z-index: 200;
+    background: rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(6px);
+    display: grid; place-items: center; padding: 24px;
+  }
+  .kb-help[hidden] { display: none; }
+  .kb-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 14px; padding: 20px 24px;
+    max-width: 420px; width: 100%;
+    max-height: 80vh; overflow-y: auto;
+  }
+  .kb-title {
+    font-size: 15px; font-weight: 600;
+    margin-bottom: 16px; color: var(--text);
+  }
+  .kb-section + .kb-section { margin-top: 16px; }
+  .kb-section-title {
+    font-size: 10px; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--text-3);
+    margin-bottom: 8px;
+  }
+  .kb-row {
+    display: flex; align-items: center; gap: 12px;
+    padding: 4px 0; font-size: 13px; color: var(--text-2);
+  }
+  .kb-key {
+    display: inline-grid; place-items: center;
+    min-width: 28px; height: 22px;
+    background: var(--elevated); color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-family: var(--mono); font-size: 11px; font-weight: 500;
+    padding: 0 6px;
+  }
+  .kb-empty { font-size: 12px; color: var(--text-3); font-style: italic; }
+  .kb-hint {
+    margin-top: 16px; padding-top: 12px;
+    border-top: 1px solid var(--border);
+    font-size: 11px; color: var(--text-3);
+    text-align: center;
   }
   .typing { display: inline-flex; gap: 4px; padding: 4px 0; }
   .typing span {
@@ -1087,9 +1185,9 @@
     <!-- CHAT -->
     <section class="view view-chat active" id="view-chat">
       <div class="chat-controls">
-        <button class="chat-ctrl-btn" id="new-chat" title="New chat" aria-label="New chat">＋</button>
+        <button class="chat-ctrl-btn" id="new-chat" title="New chat (N)" aria-label="New chat" data-kb="chat:n:New">＋</button>
         <span class="chat-title" id="chat-title"></span>
-        <button class="chat-ctrl-btn" id="chat-history-btn" title="History" aria-label="History">☰</button>
+        <button class="chat-ctrl-btn" id="chat-history-btn" title="History (H)" aria-label="History" data-kb="chat:h:History">☰</button>
       </div>
       <div class="chat-body" id="chat-body">
         <div class="chat-empty" id="chat-empty">
@@ -1106,7 +1204,7 @@
       </div>
       <div class="chat-input-wrap">
         <div class="chat-input">
-          <button class="input-mic" id="input-mic" aria-label="Voice mode" title="Voice mode">◉</button>
+          <button class="input-mic" id="input-mic" aria-label="Voice mode" title="Voice mode (V)" data-kb="chat:v:Voice">◉</button>
           <textarea class="input-field" id="cmd" rows="1" placeholder="Ask Sentrial anything…" autocomplete="off"></textarea>
           <button class="input-send" id="input-send" disabled aria-label="Send">→</button>
         </div>
@@ -1156,7 +1254,7 @@
     <section class="view view-today" id="view-today">
       <div class="view-header">
         <h2>Dashboard</h2>
-        <button class="btn-secondary" id="today-refresh" style="font-size: 13px; padding: 8px 14px;">Refresh</button>
+        <button class="btn-secondary" id="today-refresh" style="font-size: 13px; padding: 8px 14px;" title="Refresh (R)" data-kb="today:r:Refresh">Refresh</button>
       </div>
       <div class="today-body" id="today-body"></div>
     </section>
@@ -1425,6 +1523,129 @@ document.querySelectorAll('.tab-btn').forEach(b => {
   b.addEventListener('click', () => activateTab(b.dataset.tab));
 });
 
+// ================ Keyboard shortcuts ================
+// Per-tab single-letter shortcuts. An element is opted-in by adding
+// data-kb="<tab>:<key>:<label>" — e.g. data-kb="today:n:Note" lets pressing
+// "n" on the Dashboard tab click that button. Shortcuts only fire when:
+//   - Dashboard / Evolve / Settings / Chat is the active tab AND the key
+//     matches a visible [data-kb] element tagged for that tab
+//   - The focused element is NOT an input/textarea/contenteditable
+//   - No modifier (ctrl/cmd/alt) is held
+// Pressing "?" opens a small overlay listing every shortcut for the
+// current tab, built from live DOM scanning so it's always accurate.
+
+const GLOBAL_KEYS = {
+  '1': 'chat', '2': 'agents', '3': 'today', '4': 'proposals', '5': 'settings',
+};
+
+function isTextInput(el) {
+  if (!el) return false;
+  const tag = (el.tagName || '').toLowerCase();
+  if (tag === 'input' || tag === 'textarea' || tag === 'select') return true;
+  if (el.isContentEditable) return true;
+  return false;
+}
+
+function activeTabName() {
+  return (STATE && STATE.activeTab) || 'chat';
+}
+
+document.addEventListener('keydown', (e) => {
+  // Ignore when typing.
+  if (isTextInput(document.activeElement)) return;
+  // Ignore modified keypresses — those belong to the OS/browser.
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const key = e.key.toLowerCase();
+
+  // Global: digit → switch tab.
+  if (GLOBAL_KEYS[key]) {
+    e.preventDefault();
+    activateTab(GLOBAL_KEYS[key]);
+    return;
+  }
+  // Global: ? → help overlay.
+  if (key === '?' || (e.key === '/' && e.shiftKey === false && !e.metaKey)) {
+    if (key === '?') {
+      e.preventDefault();
+      toggleShortcutHelp();
+      return;
+    }
+  }
+  // Global: Esc → close help.
+  if (key === 'escape') {
+    const help = document.getElementById('kb-help');
+    if (help && !help.hidden) { help.hidden = true; return; }
+  }
+  // Per-tab: look up a data-kb element matching this tab + key.
+  const tab = activeTabName();
+  const selector = `[data-kb^="${tab}:${key}:"]`;
+  const el = document.querySelector(selector);
+  if (el && isElementVisible(el)) {
+    e.preventDefault();
+    el.click();
+  }
+});
+
+function isElementVisible(el) {
+  // Cheap visibility check: walk up, look for hidden/display:none.
+  if (!el) return false;
+  const rect = el.getBoundingClientRect();
+  if (rect.width === 0 && rect.height === 0) return false;
+  let cur = el;
+  while (cur) {
+    if (cur.hidden) return false;
+    const cs = getComputedStyle(cur);
+    if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+    cur = cur.parentElement;
+  }
+  return true;
+}
+
+function toggleShortcutHelp() {
+  let el = document.getElementById('kb-help');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'kb-help';
+    el.className = 'kb-help';
+    el.addEventListener('click', (ev) => { if (ev.target === el) el.hidden = true; });
+    document.body.appendChild(el);
+  }
+  if (!el.hidden) { el.hidden = true; return; }
+  const tab = activeTabName();
+  const perTab = { chat: [], today: [], proposals: [], settings: [], agents: [] };
+  document.querySelectorAll('[data-kb]').forEach(node => {
+    if (!isElementVisible(node)) return;
+    const parts = (node.dataset.kb || '').split(':');
+    if (parts.length < 3) return;
+    const [t, k, label] = parts;
+    if (!perTab[t]) perTab[t] = [];
+    perTab[t].push({ k, label });
+  });
+  const globalRows = Object.entries(GLOBAL_KEYS).map(([k, v]) =>
+    `<div class="kb-row"><span class="kb-key">${k}</span><span>Go to ${v}</span></div>`
+  ).join('');
+  const tabRows = (perTab[tab] || []).map(({ k, label }) =>
+    `<div class="kb-row"><span class="kb-key">${k.toUpperCase()}</span><span>${esc(label)}</span></div>`
+  ).join('') || '<div class="kb-empty">No tab-specific shortcuts here.</div>';
+  el.innerHTML = `
+    <div class="kb-card">
+      <div class="kb-title">Keyboard shortcuts</div>
+      <div class="kb-section">
+        <div class="kb-section-title">Current tab (${esc(tab)})</div>
+        ${tabRows}
+      </div>
+      <div class="kb-section">
+        <div class="kb-section-title">Global</div>
+        ${globalRows}
+        <div class="kb-row"><span class="kb-key">?</span><span>Toggle this overlay</span></div>
+        <div class="kb-row"><span class="kb-key">Esc</span><span>Close</span></div>
+      </div>
+      <div class="kb-hint">Press any shortcut key (or Esc) to dismiss.</div>
+    </div>`;
+  el.hidden = false;
+}
+window.toggleShortcutHelp = toggleShortcutHelp;
+
 // ================ Chat ================
 const cmd = document.getElementById('cmd');
 const sendBtn = document.getElementById('input-send');
@@ -1469,10 +1690,134 @@ function pushMsg(role, text) {
   emptyEl.style.display = 'none';
   const div = document.createElement('div');
   div.className = 'msg ' + role;
-  div.innerHTML = `<div class="msg-role">${role === 'user' ? 'You' : 'Sentrial'}</div><div class="msg-body">${esc(text)}</div>`;
+  // User text stays plain-escaped (they don't author markdown intentionally).
+  // Assistant replies go through the small markdown renderer so **bold**,
+  // numbered/bulleted lists, inline/fenced code, and [links](url) all render.
+  const bodyHtml = role === 'sentrial' ? renderMarkdown(text || '') : esc(text || '');
+  div.innerHTML = `<div class="msg-role">${role === 'user' ? 'You' : 'Sentrial'}</div>
+    <div class="msg-body">${bodyHtml}</div>
+    <button class="msg-copy" title="Copy" aria-label="Copy message"
+            onclick="copyMessage(this, ${JSON.stringify(text || '').replace(/"/g, '&quot;')})">⧉</button>`;
   transcriptEl.appendChild(div);
   document.getElementById('chat-body').scrollTop = 9e9;
   return div;
+}
+
+async function copyMessage(btn, text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    const prev = btn.textContent;
+    btn.textContent = '✓';
+    setTimeout(() => { btn.textContent = prev; }, 1200);
+  } catch {}
+}
+window.copyMessage = copyMessage;
+
+// -------- Minimal markdown → safe HTML --------
+// Deliberately tiny: handles what Claude's output uses most. All raw text is
+// HTML-escaped first, then the allowed inline + block grammar rewrites add
+// ONLY known-safe tags (strong, em, code, pre, h1-h4, ul, ol, li, blockquote,
+// a[safe-href], br, p). Unknown HTML in Claude's output shows up as literal.
+function renderMarkdown(src) {
+  if (!src) return '';
+  // 1. Extract fenced code blocks first so their contents don't get
+  //    re-interpreted by inline rules. Replace with placeholders.
+  const fences = [];
+  src = src.replace(/```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g, (_m, lang, code) => {
+    const i = fences.length;
+    fences.push(`<pre class="md-code"><code>${esc(code)}</code></pre>`);
+    return ` FENCE${i} `;
+  });
+  // 2. Escape everything else.
+  let out = esc(src);
+  // 3. Block-level: split into lines, scan for list runs, headers, blockquotes.
+  const lines = out.split('\n');
+  const rendered = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    // Headers
+    const h = line.match(/^(#{1,4})\s+(.*)$/);
+    if (h) {
+      rendered.push(`<h${h[1].length} class="md-h">${inlineMd(h[2])}</h${h[1].length}>`);
+      i++; continue;
+    }
+    // Numbered list
+    if (/^\s*\d+\.\s+/.test(line)) {
+      const items = [];
+      while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
+        items.push(lines[i].replace(/^\s*\d+\.\s+/, ''));
+        i++;
+      }
+      rendered.push(`<ol class="md-list">${items.map(x => `<li>${inlineMd(x)}</li>`).join('')}</ol>`);
+      continue;
+    }
+    // Bulleted list
+    if (/^\s*[-*]\s+/.test(line)) {
+      const items = [];
+      while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) {
+        items.push(lines[i].replace(/^\s*[-*]\s+/, ''));
+        i++;
+      }
+      rendered.push(`<ul class="md-list">${items.map(x => `<li>${inlineMd(x)}</li>`).join('')}</ul>`);
+      continue;
+    }
+    // Blockquote
+    if (/^>\s*/.test(line)) {
+      const chunks = [];
+      while (i < lines.length && /^>\s*/.test(lines[i])) {
+        chunks.push(lines[i].replace(/^>\s*/, ''));
+        i++;
+      }
+      rendered.push(`<blockquote class="md-quote">${inlineMd(chunks.join(' '))}</blockquote>`);
+      continue;
+    }
+    // Paragraph break on blank line
+    if (line.trim() === '') {
+      rendered.push('<div class="md-gap"></div>');
+      i++; continue;
+    }
+    // Standalone fenced-code placeholder — emit without <p> wrapper so the
+    // <pre> isn't an invalid block-in-inline.
+    if (/^\s*FENCE\d+\s*$/.test(line)) {
+      rendered.push(line.trim());
+      i++; continue;
+    }
+    // Regular paragraph — accumulate consecutive non-block lines
+    const para = [line];
+    i++;
+    while (i < lines.length && lines[i].trim() !== '' &&
+           !/^(#{1,4}\s|\s*\d+\.\s|\s*[-*]\s|>\s)/.test(lines[i]) &&
+           !/^\s*FENCE\d+\s*$/.test(lines[i])) {
+      para.push(lines[i]); i++;
+    }
+    rendered.push(`<p class="md-p">${inlineMd(para.join(' '))}</p>`);
+  }
+  let html = rendered.join('');
+  // 4. Re-insert fences.
+  html = html.replace(/ FENCE(\d+) /g, (_m, n) => fences[parseInt(n, 10)] || '');
+  return html;
+}
+
+function inlineMd(s) {
+  // s is already HTML-escaped. Apply inline rules on the escaped string.
+  // Order matters: code first (so its contents aren't touched), then bold,
+  // italic, links.
+  let out = s;
+  // `inline code`
+  out = out.replace(/`([^`\n]+)`/g, (_m, c) => `<code class="md-ic">${c}</code>`);
+  // **bold** or __bold__
+  out = out.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+  out = out.replace(/__([^_\n]+)__/g, '<strong>$1</strong>');
+  // *italic* or _italic_ — match only when surrounded by non-word or start/end
+  out = out.replace(/(^|[^\w*])\*([^*\n]+)\*(?=[^\w*]|$)/g, '$1<em>$2</em>');
+  out = out.replace(/(^|[^\w_])_([^_\n]+)_(?=[^\w_]|$)/g, '$1<em>$2</em>');
+  // [text](url) — only http/https/mailto allowed
+  out = out.replace(/\[([^\]\n]+)\]\(([^)\n]+)\)/g, (_m, text, href) => {
+    if (!/^(https?:\/\/|mailto:|\/)/i.test(href)) return text;
+    return `<a href="${href}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+  });
+  return out;
 }
 
 function pushTyping() {
@@ -2820,7 +3165,7 @@ function renderRemindersCard(reminders) {
   return `<div class="dash-card">
     <div class="dash-card-title">
       <span>Reminders</span>
-      <button class="dash-add-btn" onclick="addReminderInteractive()">+</button>
+      <button class="dash-add-btn" onclick="addReminderInteractive()" title="New reminder (M)" data-kb="today:m:Reminder">+</button>
     </div>
     <div class="reminder-list">${body}</div>
   </div>`;
@@ -2840,7 +3185,7 @@ function renderNotesCard(notes) {
   return `<div class="dash-card">
     <div class="dash-card-title">
       <span>Quick notes</span>
-      <button class="dash-add-btn" onclick="addNoteInteractive()">+</button>
+      <button class="dash-add-btn" onclick="addNoteInteractive()" title="New note (N)" data-kb="today:n:Note">+</button>
     </div>
     <div class="note-list">${body}</div>
   </div>`;
