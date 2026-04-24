@@ -14,6 +14,7 @@ Local daemon is NOT required; the WebView talks straight to Railway.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
@@ -51,6 +52,8 @@ def run():
     from AppKit import (
         NSApplication,
         NSBackingStoreBuffered,
+        NSEvent,
+        NSEventMaskFlagsChanged,
         NSEventMaskLeftMouseUp,
         NSEventMaskRightMouseUp,
         NSEventModifierFlagOption,
@@ -68,7 +71,15 @@ def run():
         NSWindowStyleMaskUtilityWindow,
     )
     from Foundation import NSMakeRect, NSObject, NSURL, NSURLRequest, NSUserDefaults
-    from WebKit import WKWebView, WKWebViewConfiguration
+    from WebKit import (
+        WKUserContentController,
+        WKWebView,
+        WKWebViewConfiguration,
+    )
+
+    from sentrial.core import secrets as kc
+    from sentrial.inputs.voice import VoiceSession
+    from sentrial.inputs import tts as tts_mod
 
     NSApplicationActivationPolicyAccessory = 1
     NSPopoverBehaviorTransient = 1
@@ -77,6 +88,10 @@ def run():
     NSViewHeightSizable = 16
     NSEventTypeLeftMouseUp = 2
     NSEventTypeRightMouseUp = 4
+    NSEventTypeFlagsChanged = 12
+
+    # Raw device-specific modifier masks (preserved in NSEvent.modifierFlags)
+    RIGHT_OPTION_MASK = 0x00000040  # NX_DEVICERALTKEYMASK
 
     def _saved_frame():
         ud = NSUserDefaults.standardUserDefaults()
@@ -105,7 +120,11 @@ def run():
             if self is None:
                 return None
             self._detached = False
+            self._r_opt_down = False
+            self._voice = None
+            self._voice_monitor = None
             self._build()
+            self._install_voice_hotkey()
             return self
 
         # ------------ construction ------------
@@ -134,6 +153,9 @@ def run():
                 NSMakeRect(0, 0, POPOVER_W, POPOVER_H)
             )
             config = WKWebViewConfiguration.alloc().init()
+            # Register a script message handler so the PWA can postMessage to native
+            # (used to hand Sentrial's reply text back for TTS playback in Voice Mode).
+            config.userContentController().addScriptMessageHandler_name_(self, "sentrial")
             self._webview = WKWebView.alloc().initWithFrame_configuration_(
                 NSMakeRect(0, 0, POPOVER_W, POPOVER_H), config
             )
@@ -252,6 +274,189 @@ def run():
             self._popover_vc.setView_(self._container)
             self._detached = False
             log.info("menubar: reattached to popover")
+
+        # ------------ voice hotkey ------------
+
+        def _install_voice_hotkey(self):
+            """
+            Global monitor on flagsChanged. Tap Right-Option toggles Voice Mode on/off.
+            On: open popover + start continuous VoiceSession.
+            Off: close session; TTS playback also stopped.
+
+            Requires Input Monitoring permission (user grants on first run via TCC prompt).
+            """
+            def handler(event):
+                try:
+                    flags = int(event.modifierFlags())
+                    is_down = bool(flags & RIGHT_OPTION_MASK)
+                    if is_down and not self._r_opt_down:
+                        self._r_opt_down = True
+                        self._toggle_voice_mode()
+                    elif not is_down and self._r_opt_down:
+                        self._r_opt_down = False
+                        # release is a no-op — we toggle only on key press
+                except Exception as e:  # noqa: BLE001
+                    log.warning("voice hotkey handler error: %s", e)
+
+            self._voice_monitor = (
+                NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
+                    NSEventMaskFlagsChanged, handler
+                )
+            )
+            if self._voice_monitor is None:
+                log.warning(
+                    "voice hotkey monitor not installed — grant Input Monitoring "
+                    "in System Settings → Privacy & Security"
+                )
+
+        def _toggle_voice_mode(self):
+            if self._voice is None:
+                self._voice_start()
+            else:
+                self._voice_stop()
+
+        def _nova3_key(self) -> str | None:
+            # Primary name is nova3_api_key / NOVA3_API_KEY. Keep legacy deepgram names as fallback.
+            return (
+                kc.get("nova3_api_key")
+                or kc.get("deepgram_api_key")
+                or os.environ.get("NOVA3_API_KEY")
+                or os.environ.get("DEEPGRAM_API_KEY")
+            )
+
+        def _voice_start(self):
+            api_key = self._nova3_key()
+            if not api_key:
+                log.warning("no NOVA3_API_KEY — voice disabled")
+                self._inject_js(
+                    'window.sentrialVoiceError && window.sentrialVoiceError('
+                    '"Set NOVA3_API_KEY — see sentrial setup")'
+                )
+                return
+
+            # Bring the popover or panel up so the user sees the live transcript
+            if self._detached:
+                if self._panel is not None and not self._panel.isVisible():
+                    self._panel.makeKeyAndOrderFront_(None)
+            else:
+                if not self._popover.isShown():
+                    btn = self._status_item.button()
+                    self._popover.showRelativeToRect_ofView_preferredEdge_(
+                        btn.bounds(), btn, NSRectEdgeMinY
+                    )
+            NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+
+            self._inject_js("window.sentrialVoiceStart && window.sentrialVoiceStart()")
+
+            def on_interim(text):
+                self._inject_js(
+                    f"window.sentrialVoiceUpdate && "
+                    f"window.sentrialVoiceUpdate({json.dumps(text)})"
+                )
+
+            def on_final(text):
+                # Per-utterance — submit immediately through the PWA.
+                self._inject_js(
+                    f"window.sentrialVoiceTurn && "
+                    f"window.sentrialVoiceTurn({json.dumps(text)})"
+                )
+
+            def on_error(err):
+                self._inject_js(
+                    f"window.sentrialVoiceError && "
+                    f"window.sentrialVoiceError({json.dumps(err)})"
+                )
+
+            try:
+                self._voice = VoiceSession(
+                    api_key=api_key,
+                    on_interim=on_interim,
+                    on_final=on_final,
+                    on_error=on_error,
+                )
+                self._voice.start()
+                log.info("voice session started (continuous mode)")
+            except Exception as e:  # noqa: BLE001
+                log.warning("voice start failed: %s", e)
+                self._inject_js(
+                    f"window.sentrialVoiceError && "
+                    f"window.sentrialVoiceError({json.dumps(str(e))})"
+                )
+                self._voice = None
+
+        def _voice_stop(self):
+            if self._voice is None:
+                return
+            try:
+                self._voice.stop()
+            except Exception as e:  # noqa: BLE001
+                log.warning("voice stop error: %s", e)
+            self._voice = None
+            # Stop any TTS still playing
+            try:
+                tts_mod.stop_playback()
+            except Exception:  # noqa: BLE001
+                pass
+            log.info("voice session ended")
+            self._inject_js("window.sentrialVoiceExit && window.sentrialVoiceExit()")
+
+        def _inject_js(self, script: str) -> None:
+            try:
+                self._webview.evaluateJavaScript_completionHandler_(script, None)
+            except Exception as e:  # noqa: BLE001
+                log.debug("JS inject failed: %s", e)
+
+        # ---- WKScriptMessageHandler: PWA → native ----
+        def userContentController_didReceiveScriptMessage_(self, _controller, message):
+            """
+            Messages from the PWA, addressed to `window.webkit.messageHandlers.sentrial`.
+            Expected payloads:
+              { type: "voice_reply", text: "Sentrial's reply text" }
+              { type: "voice_exit" }
+            """
+            try:
+                body = message.body()
+                if isinstance(body, dict):
+                    kind = str(body.get("type", ""))
+                    text = str(body.get("text", ""))
+                else:
+                    return
+            except Exception as e:  # noqa: BLE001
+                log.debug("bad script message: %s", e)
+                return
+
+            if kind == "voice_reply" and text:
+                api_key = self._nova3_key()
+                voice = kc.get("sentrial_voice") or "aura-2-orion-en"
+                import threading as _t
+                _t.Thread(
+                    target=self._speak_blocking,
+                    args=(text, api_key, voice),
+                    daemon=True,
+                ).start()
+            elif kind == "voice_exit":
+                tts_mod.stop_playback()
+                # Also make sure the voice session is torn down
+                if self._voice is not None:
+                    try:
+                        self._voice.stop()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    self._voice = None
+            elif kind == "voice_request_start":
+                # Mic button inside the popover — same effect as tapping Right-Option
+                if self._voice is None:
+                    self._voice_start()
+
+        def _speak_blocking(self, text: str, api_key: str | None, voice: str) -> None:
+            """Runs off-main-thread. Announces state transitions to the PWA orb."""
+            self._inject_js("window.sentrialOrbState && window.sentrialOrbState('speaking')")
+            try:
+                tts_mod.speak(text, api_key=api_key, voice=voice)
+            except Exception as e:  # noqa: BLE001
+                log.warning("tts failed: %s", e)
+            finally:
+                self._inject_js("window.sentrialOrbState && window.sentrialOrbState('idle')")
 
         # ------------ NSWindowDelegate ------------
 

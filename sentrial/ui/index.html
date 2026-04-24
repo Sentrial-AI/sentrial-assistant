@@ -277,13 +277,15 @@
     padding: 8px 0;
   }
   .input-field::placeholder { color: var(--text-3); }
-  .input-plus, .input-send {
+  .input-mic, .input-send {
     width: 36px; height: 36px; border-radius: 10px;
     display: grid; place-items: center;
     font-size: 18px; flex-shrink: 0;
     color: var(--text-2); transition: all 0.15s;
   }
-  .input-plus:hover { background: var(--elevated); color: var(--text); }
+  .input-mic { font-size: 14px; }
+  .input-mic:hover { background: var(--elevated); color: var(--text); }
+  .input-mic.active { background: var(--accent-muted); color: var(--accent); }
   .input-send {
     background: var(--accent-muted); color: var(--accent);
   }
@@ -649,6 +651,154 @@
   }
   .todo-due-soon { color: var(--warn); }
   .todo-due-past { color: var(--danger); }
+
+  /* ---------- Voice banner ---------- */
+  .voice-banner {
+    position: absolute;
+    left: 16px; right: 16px;
+    bottom: calc(var(--bottom-h) + 84px + var(--safe-bottom));
+    padding: 12px 16px;
+    border-radius: 14px;
+    background: rgba(125, 211, 252, 0.14);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 13px;
+    line-height: 1.55;
+    z-index: 60;
+    max-width: 560px; margin: 0 auto;
+    display: flex; align-items: center; gap: 10px;
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    animation: voice-in 0.18s ease-out;
+  }
+  .voice-banner[hidden] { display: none; }
+  .voice-banner.err {
+    background: rgba(248,113,113,0.14);
+    border-color: var(--danger);
+    color: var(--danger);
+  }
+  .voice-dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 10px rgba(125,211,252,0.8);
+    animation: voice-pulse 1s infinite;
+    flex-shrink: 0;
+  }
+  .voice-banner.err .voice-dot {
+    background: var(--danger);
+    box-shadow: 0 0 10px rgba(248,113,113,0.6);
+    animation: none;
+  }
+  .voice-text {
+    flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 13px;
+  }
+  .voice-banner.err .voice-text { color: var(--danger); font-family: var(--sans); }
+  .voice-label {
+    font-size: 10px; letter-spacing: 0.15em; text-transform: uppercase;
+    color: var(--accent);
+  }
+  .voice-banner.err .voice-label { color: var(--danger); }
+  @keyframes voice-pulse { 0%,100%{ opacity: 1 } 50%{ opacity: 0.4 } }
+  @keyframes voice-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+  /* ---------- Voice Mode overlay (fullscreen hero when Right-Option engaged) ---------- */
+  .voice-mode {
+    position: absolute; inset: 0;
+    z-index: 70;
+    background: radial-gradient(ellipse at center, rgba(5,6,10,0.85) 0%, rgba(5,6,10,0.98) 70%);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    padding: 40px 20px;
+    animation: voice-mode-in 0.22s ease-out;
+  }
+  .voice-mode[hidden] { display: none; }
+  @keyframes voice-mode-in { from { opacity: 0; } to { opacity: 1; } }
+
+  .orb-wrap {
+    position: relative;
+    width: 220px; height: 220px;
+    display: grid; place-items: center;
+  }
+  .orb {
+    position: absolute;
+    width: 120px; height: 120px; border-radius: 50%;
+    background: radial-gradient(circle at 50% 45%, #a7f3d0 0%, #5eead4 45%, rgba(94,234,212,0.35) 80%, transparent 100%);
+    box-shadow:
+      0 0 40px rgba(94, 234, 212, 0.55),
+      0 0 80px rgba(94, 234, 212, 0.25);
+    transition: background 0.6s ease, box-shadow 0.6s ease;
+    animation: orb-breathe 2.6s ease-in-out infinite;
+  }
+  .voice-mode.state-speaking .orb {
+    background: radial-gradient(circle at 50% 45%, #fde68a 0%, #fbbf24 45%, rgba(251,191,36,0.35) 80%, transparent 100%);
+    box-shadow:
+      0 0 40px rgba(251, 191, 36, 0.6),
+      0 0 80px rgba(251, 191, 36, 0.28);
+    animation: orb-breathe 1.6s ease-in-out infinite;
+  }
+  .voice-mode.state-thinking .orb {
+    background: radial-gradient(circle at 50% 45%, #cbd5e1 0%, #64748b 45%, rgba(100,116,139,0.35) 80%, transparent 100%);
+    box-shadow: 0 0 30px rgba(100, 116, 139, 0.4);
+    animation: orb-breathe 3.6s ease-in-out infinite;
+  }
+  .voice-mode.state-idle .orb {
+    animation: orb-breathe 4s ease-in-out infinite;
+    opacity: 0.75;
+  }
+  @keyframes orb-breathe {
+    0%,100% { transform: scale(1); }
+    50% { transform: scale(1.08); }
+  }
+
+  .ring {
+    position: absolute;
+    width: 120px; height: 120px;
+    border-radius: 50%;
+    border: 1.5px solid rgba(94, 234, 212, 0.55);
+    opacity: 0;
+    animation: ring-out 2.4s ease-out infinite;
+    pointer-events: none;
+  }
+  .voice-mode.state-speaking .ring { border-color: rgba(251, 191, 36, 0.55); animation-duration: 1.4s; }
+  .voice-mode.state-thinking .ring { border-color: rgba(100, 116, 139, 0.4); animation-duration: 3.2s; }
+  .voice-mode.state-idle .ring { opacity: 0; animation: none; }
+  .ring.r2 { animation-delay: 0.45s; }
+  .ring.r3 { animation-delay: 0.9s; }
+  @keyframes ring-out {
+    0% { transform: scale(1); opacity: 0.7; }
+    100% { transform: scale(2.4); opacity: 0; }
+  }
+
+  .voice-state-label {
+    margin-top: 36px;
+    font-size: 11px; letter-spacing: 0.4em;
+    text-transform: uppercase; color: var(--text-2);
+  }
+  .voice-mode.state-listening .voice-state-label { color: var(--accent); }
+  .voice-mode.state-speaking .voice-state-label { color: var(--warn); }
+
+  .voice-transcript {
+    margin-top: 20px;
+    max-width: 520px; min-height: 3em;
+    text-align: center;
+    font-size: 18px; font-weight: 500;
+    line-height: 1.45; color: var(--text);
+    letter-spacing: -0.01em;
+    padding: 0 20px;
+  }
+  .voice-transcript.response { font-family: var(--sans); color: #fde68a; }
+
+  .voice-hint {
+    position: absolute;
+    bottom: 24px;
+    font-size: 11px; letter-spacing: 0.15em;
+    color: var(--text-3); text-transform: uppercase;
+  }
 </style>
 </head>
 <body>
@@ -695,10 +845,31 @@
       </div>
       <div class="chat-input-wrap">
         <div class="chat-input">
-          <button class="input-plus" id="input-plus" aria-label="More">+</button>
+          <button class="input-mic" id="input-mic" aria-label="Voice mode" title="Voice mode">◉</button>
           <textarea class="input-field" id="cmd" rows="1" placeholder="Ask Sentrial anything…" autocomplete="off"></textarea>
           <button class="input-send" id="input-send" disabled aria-label="Send">→</button>
         </div>
+      </div>
+      <!-- Voice banner (surfaces while Right-Option is held on Mac) -->
+      <div class="voice-banner" id="voice-banner" hidden>
+        <div class="voice-dot"></div>
+        <div>
+          <div class="voice-label" id="voice-label">Listening</div>
+          <div class="voice-text" id="voice-text">Hold Right-Option…</div>
+        </div>
+      </div>
+
+      <!-- Voice Mode full overlay — animated orb, state-colored -->
+      <div class="voice-mode state-idle" id="voice-mode" hidden>
+        <div class="orb-wrap">
+          <div class="ring r1"></div>
+          <div class="ring r2"></div>
+          <div class="ring r3"></div>
+          <div class="orb"></div>
+        </div>
+        <div class="voice-state-label" id="voice-state-label">Ready</div>
+        <div class="voice-transcript" id="voice-transcript"></div>
+        <div class="voice-hint" id="voice-hint">Hold Right-Option to speak</div>
       </div>
       <!-- History drawer overlay (inside chat view for proper mobile layering) -->
       <div class="history-drawer" id="history-drawer" hidden>
@@ -1229,6 +1400,249 @@ pushBtn.addEventListener('click', async () => {
   await api('POST', '/api/push/subscribe', { endpoint: json.endpoint, keys: json.keys });
   updatePushStatus();
 });
+
+// ================ Voice Mode (tap-to-toggle, continuous) ================
+// Menubar calls sentrialVoiceStart / Update / Turn / Exit via evaluateJavaScript.
+// Mobile path uses webkitSpeechRecognition + SpeechSynthesis (same orb UI).
+(function installVoiceBridge() {
+  const mode = document.getElementById('voice-mode');
+  const stateLabel = document.getElementById('voice-state-label');
+  const transcript = document.getElementById('voice-transcript');
+  const hint = document.getElementById('voice-hint');
+  const banner = document.getElementById('voice-banner');
+  const micBtn = document.getElementById('input-mic');
+
+  let active = false;
+  let turnInFlight = false;
+  let mobileRecog = null;       // SpeechRecognition instance (mobile path)
+  let mobileMode = false;
+
+  function setState(name) {
+    if (!mode) return;
+    mode.className = 'voice-mode state-' + name;
+    if (name === 'listening')  stateLabel.textContent = 'Listening';
+    else if (name === 'thinking') stateLabel.textContent = 'Thinking';
+    else if (name === 'speaking') stateLabel.textContent = 'Speaking';
+    else stateLabel.textContent = 'Ready';
+  }
+
+  function show() {
+    if (mode) { mode.hidden = false; active = true; }
+    if (micBtn) micBtn.classList.add('active');
+  }
+  function hide() {
+    if (mode) { mode.hidden = true; active = false; }
+    if (micBtn) micBtn.classList.remove('active');
+    transcript.textContent = '';
+    transcript.classList.remove('response');
+    setState('idle');
+    stopSpeakingIfAny();
+    postNative({ type: 'voice_exit' });
+    // Mobile path cleanup
+    if (mobileRecog) {
+      try { mobileRecog.stop(); } catch {}
+      mobileRecog = null;
+    }
+    mobileMode = false;
+  }
+
+  function postNative(payload) {
+    try {
+      if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.sentrial) {
+        window.webkit.messageHandlers.sentrial.postMessage(payload);
+      }
+    } catch {}
+  }
+
+  function isNative() {
+    try {
+      return !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.sentrial);
+    } catch { return false; }
+  }
+
+  // --- Mac bridge handlers (called by menubar.py) ---
+
+  window.sentrialVoiceStart = function () {
+    activateTab('chat');
+    show();
+    transcript.textContent = '';
+    hint.textContent = 'Go ahead — I\'m listening.';
+    setState('listening');
+    if (banner) banner.hidden = true;
+  };
+
+  window.sentrialVoiceUpdate = function (text) {
+    if (typeof text !== 'string' || !active) return;
+    transcript.textContent = text || '…';
+    transcript.classList.remove('response');
+  };
+
+  // Per-utterance turn (continuous mode). Submit text → get reply → TTS speaks → orb relistens.
+  window.sentrialVoiceTurn = async function (text) {
+    if (!active || turnInFlight) return;
+    const finalText = (text && String(text).trim()) || '';
+    if (!finalText) return;
+    turnInFlight = true;
+    setState('thinking');
+    hint.textContent = 'Thinking…';
+    transcript.textContent = finalText;
+    pushMsg('user', finalText);
+    const typingEl = pushTyping();
+    try {
+      const r = await api('POST', '/inbound', {
+        text: finalText, channel: 'voice', conversation_id: STATE.conversationId
+      });
+      const d = await r.json();
+      typingEl.remove();
+      const reply = d.reply || '(no reply)';
+      pushMsg('sentrial', reply);
+
+      transcript.textContent = reply;
+      transcript.classList.add('response');
+      setState('speaking');
+      hint.textContent = 'Tap Right-Option to exit';
+
+      if (isNative()) {
+        // Mac: native TTS via afplay + Aura
+        postNative({ type: 'voice_reply', text: reply });
+      } else {
+        // Mobile: browser TTS via SpeechSynthesis
+        speakBrowser(reply, () => {
+          if (active) { setState('listening'); transcript.classList.remove('response'); transcript.textContent = ''; hint.textContent = 'I\'m listening.'; }
+        });
+      }
+    } catch (e) {
+      typingEl.remove();
+      pushMsg('sentrial', '[error] ' + e.message);
+      transcript.textContent = '[error] ' + e.message;
+      setState('idle');
+    } finally {
+      turnInFlight = false;
+    }
+  };
+
+  // Native tells us Mac TTS playback finished → return to listening.
+  window.sentrialOrbState = function (name) {
+    if (!active) return;
+    if (name === 'idle' || name === 'listening') {
+      setState('listening');
+      transcript.classList.remove('response');
+      transcript.textContent = '';
+      hint.textContent = 'I\'m listening.';
+    } else {
+      setState(name);
+    }
+  };
+
+  // Native exit (user tapped Right-Option again while voice mode was on).
+  window.sentrialVoiceExit = function () { hide(); };
+
+  window.sentrialVoiceError = function (err) {
+    if (active) {
+      transcript.textContent = '[voice error] ' + String(err || '');
+      setState('idle');
+      setTimeout(hide, 2400);
+    } else if (banner) {
+      banner.hidden = false;
+      banner.classList.add('err');
+      document.getElementById('voice-label').textContent = 'Voice error';
+      document.getElementById('voice-text').textContent = String(err || '');
+      setTimeout(() => { banner.hidden = true; }, 2500);
+    }
+  };
+
+  // Esc exits Voice Mode (desktop only; iOS doesn't have Esc)
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && active) hide();
+  });
+  if (mode) {
+    mode.addEventListener('click', (e) => {
+      if (e.target === mode) hide();
+    });
+  }
+
+  // --- Browser TTS (mobile / PWA not on Mac) ---
+  function speakBrowser(text, onDone) {
+    if (!('speechSynthesis' in window)) { onDone && onDone(); return; }
+    try { window.speechSynthesis.cancel(); } catch {}
+    const u = new SpeechSynthesisUtterance(text);
+    u.rate = 1.02; u.pitch = 1.0; u.volume = 1.0;
+    const voices = window.speechSynthesis.getVoices() || [];
+    // Prefer a British/American male if available; fall back to default.
+    const preferred = voices.find(v => /daniel/i.test(v.name)) ||
+                      voices.find(v => /(british|uk).*(male)?/i.test(v.name + ' ' + v.lang)) ||
+                      voices.find(v => v.lang && v.lang.startsWith('en'));
+    if (preferred) u.voice = preferred;
+    u.onend = () => onDone && onDone();
+    u.onerror = () => onDone && onDone();
+    window.speechSynthesis.speak(u);
+  }
+  function stopSpeakingIfAny() {
+    try { if ('speechSynthesis' in window) window.speechSynthesis.cancel(); } catch {}
+  }
+
+  // --- Mobile voice (webkitSpeechRecognition) ---
+  function startMobileVoice() {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) {
+      window.sentrialVoiceError('Voice not supported in this browser.');
+      return;
+    }
+    activateTab('chat');
+    show();
+    mobileMode = true;
+    setState('listening');
+    hint.textContent = 'I\'m listening.';
+    transcript.textContent = '';
+
+    const r = new SR();
+    r.continuous = true;
+    r.interimResults = true;
+    r.lang = 'en-US';
+
+    r.onresult = (ev) => {
+      let interim = '', finalChunk = '';
+      for (let i = ev.resultIndex; i < ev.results.length; i++) {
+        const res = ev.results[i];
+        if (res.isFinal) finalChunk += res[0].transcript;
+        else interim += res[0].transcript;
+      }
+      if (interim) { transcript.textContent = interim; transcript.classList.remove('response'); }
+      if (finalChunk && finalChunk.trim()) {
+        // Pause recognition while we process + speak the reply
+        try { r.stop(); } catch {}
+        window.sentrialVoiceTurn(finalChunk.trim());
+      }
+    };
+    r.onerror = (ev) => {
+      window.sentrialVoiceError(ev.error || 'recognition error');
+    };
+    r.onend = () => {
+      // Auto-restart while in voice mode and not mid-turn
+      if (active && mobileMode && !turnInFlight) {
+        try { r.start(); } catch {}
+      }
+    };
+    try { r.start(); mobileRecog = r; } catch (e) {
+      window.sentrialVoiceError(String(e));
+    }
+  }
+
+  // Mic button: on Mac, native hotkey owns voice — nudge user. On mobile/browser, toggle mobile voice.
+  if (micBtn) {
+    micBtn.addEventListener('click', () => {
+      if (isNative()) {
+        // On Mac popover, prefer the Right-Option hotkey — but allow click to toggle too
+        if (active) hide(); else postNative({ type: 'voice_request_start' });
+        return;
+      }
+      if (active) hide(); else startMobileVoice();
+    });
+  }
+
+  // After mobile browser TTS ends, if still active, resume recognition
+  // (handled via r.onend auto-restart above)
+})();
 
 // ================ Chat history ================
 async function openHistory() {

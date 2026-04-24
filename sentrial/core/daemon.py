@@ -157,6 +157,8 @@ def setup():
     _prompt("anthropic_api_key", "Anthropic API key", required=True)
     _prompt("notion_api_key", "Notion integration token (optional)")
     _prompt("notion_tasks_db_id", "Notion tasks DB UUID (optional)")
+    _prompt("nova3_api_key", "Deepgram key for Voice Mode — Nova-3 STT + Aura-2 TTS (optional)")
+    _prompt("sentrial_voice", "Aura-2 voice for Sentrial replies (default aura-2-orion-en)")
     _prompt("liam_phone", "Your phone number for iMessage (+14155551234) (optional)")
     _prompt("pushover_token", "Pushover token (optional)")
     _prompt("pushover_user", "Pushover user key (optional)")
