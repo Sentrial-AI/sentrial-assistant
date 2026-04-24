@@ -70,11 +70,21 @@ def run():
         NSWindowStyleMaskTitled,
         NSWindowStyleMaskUtilityWindow,
     )
-    from Foundation import NSMakeRect, NSObject, NSURL, NSURLRequest, NSUserDefaults
+    from Foundation import (
+        NSDate,
+        NSMakeRect,
+        NSObject,
+        NSSet,
+        NSURL,
+        NSURLRequest,
+        NSURLRequestReloadIgnoringLocalCacheData,
+        NSUserDefaults,
+    )
     from WebKit import (
         WKUserContentController,
         WKWebView,
         WKWebViewConfiguration,
+        WKWebsiteDataStore,
     )
 
     from sentrial.core import secrets as kc
@@ -156,6 +166,23 @@ def run():
             # Register a script message handler so the PWA can postMessage to native
             # (used to hand Sentrial's reply text back for TTS playback in Voice Mode).
             config.userContentController().addScriptMessageHandler_name_(self, "sentrial")
+
+            # Clear HTTP cache + service worker registrations on each launch so UI
+            # changes on Railway always appear. Preserves localStorage (token stays).
+            try:
+                types = NSSet.setWithArray_([
+                    "WKWebsiteDataTypeDiskCache",
+                    "WKWebsiteDataTypeMemoryCache",
+                    "WKWebsiteDataTypeOfflineWebApplicationCache",
+                    "WKWebsiteDataTypeServiceWorkerRegistrations",
+                    "WKWebsiteDataTypeFetchCache",
+                ])
+                since = NSDate.dateWithTimeIntervalSince1970_(0)
+                WKWebsiteDataStore.defaultDataStore() \
+                    .removeDataOfTypes_modifiedSince_completionHandler_(types, since, None)
+            except Exception as e:  # noqa: BLE001
+                log.debug("cache clear skipped: %s", e)
+
             self._webview = WKWebView.alloc().initWithFrame_configuration_(
                 NSMakeRect(0, 0, POPOVER_W, POPOVER_H), config
             )
@@ -163,9 +190,13 @@ def run():
                 NSViewWidthSizable | NSViewHeightSizable
             )
             self._container.addSubview_(self._webview)
-            self._webview.loadRequest_(
-                NSURLRequest.requestWithURL_(NSURL.URLWithString_(PWA_URL))
+            # Force a fresh fetch on first load (belt-and-suspenders with cache clear above)
+            req = NSURLRequest.requestWithURL_cachePolicy_timeoutInterval_(
+                NSURL.URLWithString_(PWA_URL),
+                NSURLRequestReloadIgnoringLocalCacheData,
+                30.0,
             )
+            self._webview.loadRequest_(req)
             log.info("menubar loaded PWA → %s", PWA_URL)
 
             # Popover wraps the container via a view controller
