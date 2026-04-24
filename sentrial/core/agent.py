@@ -64,8 +64,15 @@ class Agent:
         """Run one conversational turn. Returns the assistant's final text reply."""
         conv_id = conversation_id or uuid.uuid4().hex[:12]
 
-        preamble = self._build_memory_preamble()
-        composed = (preamble + user_message) if preamble else user_message
+        # Pre-turn retrieval — learned user profile, KG entity cards for names
+        # mentioned in the message, matching task playbook, top relevant
+        # lessons. Each component is a no-op on a fresh install.
+        retrieved = self._retrieve_context(user_message)
+        legacy = self._build_memory_preamble()
+        composed = (retrieved + legacy + user_message) if (retrieved or legacy) else user_message
+
+        # Pull the prior assistant reply for distillation's correction-detection.
+        prev_assistant = self._prev_assistant_text(conv_id)
 
         messages: list[dict] = [{"role": "user", "content": composed}]
         memory.log_turn(conv_id, channel, {"role": "user", "content": user_message})
@@ -85,6 +92,11 @@ class Agent:
             if resp.stop_reason == "end_turn":
                 text = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
                 memory.log_turn(conv_id, channel, {"role": "assistant", "content": text})
+                # Fire-and-forget distillation — doesn't block the reply.
+                self._schedule_distill(
+                    user_message=user_message, assistant_reply=text,
+                    prev_assistant=prev_assistant, conversation_id=conv_id,
+                )
                 return text
 
             if resp.stop_reason == "tool_use":
@@ -97,6 +109,49 @@ class Agent:
 
         log.warning(f"hit MAX_TOOL_ITERATIONS={MAX_TOOL_ITERATIONS}")
         return "[sentrial] hit tool-iteration limit — stopping"
+
+    def _retrieve_context(self, user_message: str) -> str:
+        """Build the pre-turn context block. Fails closed — any error in the
+        evolution layer returns empty rather than blocking the turn."""
+        try:
+            from sentrial.evolution import retrieval
+            ctx = retrieval.build(user_message)
+            return ctx.as_preamble()
+        except Exception as e:  # noqa: BLE001
+            log.warning("retrieval failed (ignored): %s", e)
+            return ""
+
+    def _prev_assistant_text(self, conv_id: str) -> str | None:
+        """Find the last assistant turn in this conversation, if any."""
+        try:
+            conv = memory.get_conversation(conv_id)
+        except Exception:  # noqa: BLE001
+            return None
+        if not conv:
+            return None
+        for t in reversed(conv.get("turns") or []):
+            if t.get("role") == "assistant":
+                c = t.get("content")
+                if isinstance(c, str):
+                    return c
+                if isinstance(c, list):
+                    return "\n".join(b.get("text", "") for b in c if isinstance(b, dict))
+        return None
+
+    def _schedule_distill(
+        self, user_message: str, assistant_reply: str,
+        prev_assistant: str | None, conversation_id: str,
+    ) -> None:
+        try:
+            from sentrial.evolution import distill
+            distill.fire_and_forget(
+                user_message=user_message,
+                assistant_reply=assistant_reply,
+                prev_assistant=prev_assistant,
+                conversation_id=conversation_id,
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning("distill scheduling failed (ignored): %s", e)
 
     # ----- internals -----
 

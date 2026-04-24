@@ -245,9 +245,32 @@ async def _evaluate_candidate(
     client: AsyncAnthropic, candidate: dict, sample: list[dict]
 ) -> float:
     """
-    Score a candidate 0..10 via an LLM judge. Full replay-based eval is TODO; for now
-    the judge reviews the diff + rationale + recent behavior and predicts a delta.
+    Score a candidate via replay-based evaluation (the real thing) with a
+    judge-only fallback when there are no past turns to replay.
+
+    Returns a score delta in roughly [-2, +2]. The loop's MIN_SCORE_DELTA
+    threshold (0.5) gates whether the candidate becomes a proposal.
     """
+    from sentrial.evolution import replay
+
+    target = candidate.get("target", "")
+    surface_kind = "system_prompt" if target.endswith("system_prompt.md") else "system_prompt"
+
+    try:
+        rr = await replay.evaluate(
+            baseline_surface=candidate.get("before", ""),
+            candidate_surface=candidate.get("after", ""),
+            surface_kind=surface_kind,
+        )
+        # Stash replay details on the candidate so proposals carry the receipts.
+        candidate["replay"] = rr.to_dict()
+        if rr.sample_size > 0:
+            return rr.delta
+    except Exception as e:  # noqa: BLE001
+        log.warning("replay eval failed — falling back to judge-only: %s", e)
+
+    # Fallback: judge-only score (the old behavior). Used on cold start when
+    # there are no past turns, and as a safety net when replay errors.
     msg = (
         "You are an evaluator. Rate how much the proposed edit would improve Liam's experience, "
         "given the recent audit sample. Return a single float from 0 to 10 where 5 means "
@@ -265,9 +288,9 @@ async def _evaluate_candidate(
     try:
         score = float(text.split()[0])
     except (ValueError, IndexError):
-        return 5.0
-    # Convert 0..10 raw score to a delta-above-neutral
-    return score - 5.0
+        return 0.0
+    # Scale judge-only 0..10 to ~[-2, +2] but dampen because it's unverified.
+    return (score - 5.0) * 0.4
 
 
 def _mini_diff(before: str, after: str) -> str:
