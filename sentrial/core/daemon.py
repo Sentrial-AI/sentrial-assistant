@@ -85,6 +85,22 @@ async def _main(host: str | None, port: int | None) -> None:
     scheduling_server.register(registry, task_runner)
     log.info("loaded: scheduling MCP (plan_day + cross-platform reminders)")
 
+    # Gmail + Calendar are OAuth-gated: only register when we have a stored
+    # Google token. Otherwise every tool call would fail with 'not connected'
+    # and the agent would see a dozen dead tools in its catalog.
+    try:
+        from sentrial.core import google_oauth
+        if google_oauth.is_connected():
+            from sentrial.mcps.gmail import server as gmail_server
+            from sentrial.mcps.calendar import server as calendar_server
+            gmail_server.register(registry, task_runner)
+            calendar_server.register(registry, task_runner)
+            log.info("loaded: gmail + calendar MCPs (google oauth connected)")
+        else:
+            log.info("skipped: gmail + calendar MCPs (google oauth not connected)")
+    except Exception as e:  # noqa: BLE001
+        log.warning("gmail/calendar load failed: %s", e)
+
     # notify_user — Sentrial's outbound voice
     async def _notify_user_tool(args: dict) -> dict:
         msg = str(args.get("message", ""))

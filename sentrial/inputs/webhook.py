@@ -321,19 +321,31 @@ def build_app(
         from sentrial.evolution import proposals as _props
 
         # ---- integrations ----
+        # Real status per capability:
+        #   active       — ready to use right now
+        #   pending_auth — creds configured but user hasn't completed OAuth
+        #   disabled     — no creds configured at all
+        from sentrial.core import google_oauth as _gauth
         integrations: list[dict] = []
-        caps = [
-            ("notion",   "Notion",   "notion_api_key"),
-            ("gmail",    "Gmail",    "google_client_id"),
-            ("calendar", "Calendar", "google_client_id"),
-        ]
-        for key, label, env_key in caps:
-            present = bool(_kc.get(env_key))
-            integrations.append({
-                "key": key, "name": label,
-                "status": "active" if present else "pending_auth",
-                "detail": "Connected" if present else "Needs auth",
-            })
+        notion_active = bool(_kc.get("notion_api_key"))
+        integrations.append({
+            "key": "notion", "name": "Notion",
+            "status": "active" if notion_active else "disabled",
+            "detail": "Connected" if notion_active else "Needs API key or OAuth",
+        })
+        google_creds = bool(
+            _kc.get("google_client_id") or os.environ.get("GOOGLE_CLIENT_ID")
+        )
+        google_authed = _gauth.is_connected()
+        for key, label in (("gmail", "Gmail"), ("calendar", "Calendar")):
+            if google_authed:
+                status, detail = "active", "Connected"
+            elif google_creds:
+                status, detail = "pending_auth", "Authorize at /api/oauth/google/start"
+            else:
+                status, detail = "disabled", "Google OAuth not configured"
+            integrations.append({"key": key, "name": label,
+                                  "status": status, "detail": detail})
 
         # ---- Notion todos (direct tool call, no LLM) ----
         todos: list[dict] = []
@@ -388,12 +400,37 @@ def build_app(
                 "time": None,
             })
 
-        # ---- email + calendar placeholders ----
+        # ---- email + calendar ----
+        # Real data when Google is connected; else legacy placeholders.
+        from sentrial.core import google_oauth
         emails = {"status": "not_connected", "items": []}
         calendar_slot = {"status": "not_connected", "events": []}
-        if _kc.get("google_client_id") and _kc.get("google_client_secret"):
-            emails["status"] = "pending_integration"
-            calendar_slot["status"] = "pending_integration"
+        if google_oauth.is_connected():
+            # Recent inbox items (unread first).
+            try:
+                from sentrial.mcps.gmail.server import list_emails as _list_emails
+                res = await _list_emails({"limit": 8, "label": "INBOX"})
+                if isinstance(res, dict) and "emails" in res:
+                    emails = {"status": "active", "items": res["emails"]}
+                else:
+                    emails = {"status": "error", "items": [],
+                              "error": (res or {}).get("error", "unknown")}
+            except Exception as e:  # noqa: BLE001
+                emails = {"status": "error", "items": [], "error": str(e)[:200]}
+            # Next ~24h of events on primary.
+            try:
+                from sentrial.mcps.calendar.server import list_upcoming_events as _list_events
+                res = await _list_events({"limit": 10, "hours_window": 24})
+                if isinstance(res, dict) and "events" in res:
+                    calendar_slot = {"status": "active", "events": res["events"]}
+                else:
+                    calendar_slot = {"status": "error", "events": [],
+                                     "error": (res or {}).get("error", "unknown")}
+            except Exception as e:  # noqa: BLE001
+                calendar_slot = {"status": "error", "events": [], "error": str(e)[:200]}
+        elif _kc.get("google_client_id") and _kc.get("google_client_secret"):
+            emails["status"] = "pending_auth"
+            calendar_slot["status"] = "pending_auth"
 
         return {
             "integrations": integrations,
@@ -605,7 +642,10 @@ def build_app(
                 tok = r.json()
         except Exception as e:  # noqa: BLE001
             raise HTTPException(status_code=502, detail=str(e))
-        memory.remember("oauth", "google", tok)
+        # Normalize + persist via the shared helper so expires_at is set and
+        # subsequent refreshes preserve the refresh_token if Google omits it.
+        from sentrial.core import google_oauth
+        google_oauth.save_token(tok)
         audit.log("user", "oauth_connected:google", 2, result="saved")
         return RedirectResponse("/ui/#settings", status_code=307)
 

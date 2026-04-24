@@ -393,6 +393,26 @@
   }
   .mcp-name { font-size: 14px; font-weight: 500; }
   .mcp-sub { font-size: 12px; color: var(--text-3); font-family: var(--mono); }
+
+  .connections-list { display: flex; flex-direction: column; gap: 8px; }
+  .conn-row {
+    display: grid; grid-template-columns: 10px 1fr auto; gap: 12px;
+    align-items: center;
+    padding: 12px 14px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px;
+  }
+  .conn-dot {
+    width: 9px; height: 9px; border-radius: 50%;
+    background: var(--text-faint);
+  }
+  .conn-dot.ok      { background: var(--success); box-shadow: 0 0 6px rgba(74,222,128,0.5); }
+  .conn-dot.pending { background: var(--warn);    box-shadow: 0 0 6px rgba(251,191,36,0.4); }
+  .conn-dot.off     { background: var(--text-faint); }
+  .conn-name { font-size: 14px; font-weight: 500; color: var(--text); }
+  .conn-detail { font-size: 12px; color: var(--text-3); margin-top: 2px; }
+  .conn-hint { font-size: 11px; color: var(--text-faint); font-family: var(--mono); }
+  .meeting-sub { color: var(--text-3); font-size: 11px; }
   .badge {
     font-size: 10px; font-family: var(--mono);
     padding: 3px 8px; border-radius: 6px;
@@ -1167,6 +1187,10 @@
           <p class="help" id="push-help">Get pinged when autonomous jobs finish.</p>
         </div>
         <div class="settings-group">
+          <h3>Connections</h3>
+          <div class="connections-list" id="connections-list"></div>
+        </div>
+        <div class="settings-group">
           <h3>Capabilities</h3>
           <div id="settings-mcps"></div>
         </div>
@@ -1590,6 +1614,86 @@ function renderMCPs(mcps) {
       <span class="badge ${m.status}">${m.status}</span>
     </div>`).join('');
 }
+
+// ---- Connections (OAuth-based integrations) ----
+
+async function loadConnections() {
+  const el = document.getElementById('connections-list');
+  if (!el) return;
+  // Reuse /api/today's integrations block — it already knows active / pending_auth / disabled.
+  try {
+    const r = await api('GET', '/api/today');
+    if (!r.ok) return;
+    const d = await r.json();
+    renderConnections(d.integrations || []);
+  } catch {}
+}
+
+function renderConnections(integrations) {
+  const el = document.getElementById('connections-list');
+  if (!el) return;
+  // Google Gmail + Google Calendar share one OAuth — collapse them visually.
+  const googleItems = integrations.filter(i => i.key === 'gmail' || i.key === 'calendar');
+  const googleStatus = googleItems.every(i => i.status === 'active') ? 'active'
+                    : googleItems.some(i => i.status === 'pending_auth') ? 'pending_auth'
+                    : 'disabled';
+  const googleDetail = googleStatus === 'active'
+    ? 'Gmail + Calendar connected.'
+    : googleStatus === 'pending_auth'
+      ? 'OAuth configured — click Connect to authorize.'
+      : 'Configure GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET to enable.';
+  const notion = integrations.find(i => i.key === 'notion');
+
+  const rows = [];
+  rows.push(renderConnectionRow({
+    key: 'google', name: 'Google (Gmail + Calendar)',
+    status: googleStatus, detail: googleDetail,
+    start_url: '/api/oauth/google/start?scope=openid%20email%20profile%20https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcalendar%20https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fgmail.modify',
+  }));
+  if (notion) {
+    rows.push(renderConnectionRow({
+      key: 'notion', name: 'Notion',
+      status: notion.status, detail: notion.detail,
+      start_url: '/api/oauth/notion/start',
+    }));
+  }
+  el.innerHTML = rows.join('');
+}
+
+function renderConnectionRow(c) {
+  const cls = c.status === 'active' ? 'ok' : c.status === 'pending_auth' ? 'pending' : 'off';
+  const btn = c.status === 'active'
+    ? `<button class="btn-secondary" onclick="reconnectOAuth('${esc(c.key)}')">Reconnect</button>`
+    : c.status === 'pending_auth'
+      ? `<button class="btn-primary" onclick="startOAuth('${esc(c.key)}')">Connect</button>`
+      : `<span class="conn-hint">Not configured</span>`;
+  return `<div class="conn-row">
+    <div class="conn-dot ${cls}"></div>
+    <div class="conn-text">
+      <div class="conn-name">${esc(c.name)}</div>
+      <div class="conn-detail">${esc(c.detail || '')}</div>
+    </div>
+    <div class="conn-action" data-start-url="${esc(c.start_url || '')}">${btn}</div>
+  </div>`;
+}
+
+async function startOAuth(provider) {
+  // Open in the same window so the redirect back lands on us.
+  const el = document.querySelector(`.conn-action[data-start-url] button`);
+  const row = event && event.target && event.target.closest('.conn-row');
+  const startUrl = row && row.querySelector('.conn-action').getAttribute('data-start-url');
+  const url = startUrl || (provider === 'google' ? '/api/oauth/google/start' : '/api/oauth/notion/start');
+  // Inject the bearer token so /start auth-gates don't 401 before redirecting.
+  // (start endpoints are currently unauthenticated, so this is just belt-and-suspenders.)
+  window.location.href = url;
+}
+window.startOAuth = startOAuth;
+
+async function reconnectOAuth(provider) {
+  if (!confirm(`Reconnect ${provider}? (This will re-run the OAuth flow.)`)) return;
+  return startOAuth(provider);
+}
+window.reconnectOAuth = reconnectOAuth;
 
 // ---- Web Push ----
 const pushBtn = document.getElementById('enable-push');
@@ -2597,18 +2701,66 @@ function weatherLabel(code) {
   return 'Cloudy';
 }
 
-function renderMeetingsCard(meetings, calendar) {
-  const connected = (calendar && calendar.status) === 'active';
-  if (!meetings.length) {
+function renderMeetingsCard(inferredMeetings, calendar) {
+  // If Google Calendar is connected and returned events, prefer those —
+  // they're ground truth (attendees, links, exact times).
+  if (calendar && calendar.status === 'active' && (calendar.events || []).length) {
+    const now = Date.now();
+    const events = calendar.events
+      .map(ev => {
+        const startISO = ev.start;
+        const start = new Date(startISO);
+        const diffMin = Math.round((start - now) / 60000);
+        let label = '—';
+        let cls = '';
+        if (diffMin < -5) { label = 'past'; cls = 'past'; }
+        else if (diffMin <= 0) { label = 'now'; cls = 'now'; }
+        else if (diffMin < 60) { label = `in ${diffMin}m`; cls = 'soon'; }
+        else if (diffMin < 60 * 8) { label = `in ${Math.round(diffMin / 60)}h`; cls = 'soon'; }
+        else if (start.toDateString() === new Date().toDateString()) {
+          label = start.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+        } else {
+          label = start.toLocaleDateString([], { month: 'short', day: 'numeric' });
+        }
+        return { ev, label, cls };
+      })
+      .filter(x => x.cls !== 'past')   // hide already-passed
+      .slice(0, 5);
+    if (!events.length) {
+      return `<div class="dash-card">
+        <div class="dash-card-title"><span>Upcoming meetings</span></div>
+        <div class="empty-state">No upcoming calendar events.</div>
+      </div>`;
+    }
+    return `<div class="dash-card">
+      <div class="dash-card-title"><span>Upcoming meetings</span><span class="count">${events.length}</span></div>
+      <div class="meeting-list">
+        ${events.map(({ ev, label, cls }) => `
+          <div class="meeting-row" ${ev.htmlLink ? `onclick="window.open('${esc(ev.htmlLink)}', '_blank')"` : ''}>
+            <div class="meeting-time ${cls}">${esc(label)}</div>
+            <div class="meeting-title">
+              ${esc(ev.summary || '(untitled)')}
+              ${ev.location ? `<span class="meeting-sub"> · ${esc(ev.location)}</span>` : ''}
+              ${ev.hangoutLink ? `<span class="meeting-sub"> · <a href="${esc(ev.hangoutLink)}" target="_blank" onclick="event.stopPropagation()">join</a></span>` : ''}
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    </div>`;
+  }
+
+  // Fallback to Notion-inferred meetings when Calendar isn't connected.
+  if (!inferredMeetings.length) {
+    const notConnected = !calendar || calendar.status !== 'active';
     return `<div class="dash-card">
       <div class="dash-card-title"><span>Upcoming meetings</span></div>
-      <div class="empty-state">${connected ? 'No meetings in the immediate queue.' : 'Calendar not connected — meetings are inferred from Notion task titles for now.'}</div>
+      <div class="empty-state">${notConnected ? 'Calendar not connected — meetings are inferred from Notion task titles for now.' : 'No meetings in the immediate queue.'}</div>
     </div>`;
   }
   return `<div class="dash-card">
-    <div class="dash-card-title"><span>Upcoming meetings</span><span class="count">${meetings.length}</span></div>
+    <div class="dash-card-title"><span>Upcoming meetings</span><span class="count">${inferredMeetings.length}</span></div>
     <div class="meeting-list">
-      ${meetings.map(({ t, when }) => `
+      ${inferredMeetings.map(({ t, when }) => `
         <div class="meeting-row" ${t.url ? `onclick="openTodoUrl('${esc(t.url)}')"` : ''}>
           <div class="meeting-time ${when.cls || ''}">${esc(when.label || '—')}</div>
           <div class="meeting-title">${esc(shortenTitle(t.title))}</div>
@@ -3021,6 +3173,7 @@ activateTab = function(name) {
   _origActivate(name);
   if (name === 'proposals') { loadProposals(); loadMetrics(); }
   if (name === 'today') { loadToday(); }
+  if (name === 'settings') { loadConnections(); }
 };
 
 // ================ State refresh ================
