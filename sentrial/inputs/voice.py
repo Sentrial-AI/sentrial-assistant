@@ -11,9 +11,10 @@ speaks; the final transcript accumulates as each utterance is finalized.
 Fails gracefully if DEEPGRAM_API_KEY is missing, if deepgram-sdk or sounddevice
 aren't installed, or if mic permission is denied.
 
-Compatible with deepgram-sdk ≥ 6.x (Fern-generated). The v6 API replaced
-LiveOptions/LiveTranscriptionEvents with a context-manager-based WebSocket client
-accessible via dg.listen.v1.connect(**kwargs).
+Talks directly to Deepgram's /v1/listen WebSocket — we don't use deepgram-sdk's
+connect() because 6.0.2's Fern-generated URL builder serializes Python booleans
+as capital "True"/"False", which Deepgram rejects as HTTP 400. `deepgram-sdk` is
+still imported only to fail-fast when missing; actual transport is `websockets`.
 """
 from __future__ import annotations
 
@@ -85,14 +86,13 @@ class VoiceSession:
 
     def _run(self) -> None:
         _ensure_ssl_certs()
+
+        # websockets + sounddevice are hard requirements; fail fast if missing.
         try:
-            from deepgram import DeepgramClient
-            from deepgram.listen.v1.types.listen_v1results import ListenV1Results
+            import websockets.sync.client as ws_client
         except ImportError as e:
-            log.warning("deepgram-sdk not installed: %s", e)
-            self._on_error(
-                "deepgram-sdk missing — run: ./.venv/bin/pip install deepgram-sdk sounddevice"
-            )
+            log.warning("websockets not installed: %s", e)
+            self._on_error("websockets missing — pip install websockets")
             return
 
         try:
@@ -104,41 +104,62 @@ class VoiceSession:
             )
             return
 
-        try:
-            dg = DeepgramClient(api_key=self.api_key)
+        import json as _json
+        from urllib.parse import urlencode
 
-            with dg.listen.v1.connect(
-                model=self.model,
-                language=self.language,
-                encoding="linear16",
-                channels=CHANNELS,
-                sample_rate=SAMPLE_RATE,
-                interim_results=True,
-                punctuate=True,
-                smart_format=True,
-                endpointing=300,
-            ) as ws:
-                # Receive messages in a background thread (ws iterator blocks).
+        # Build the Deepgram /v1/listen query. Booleans must be lowercase "true"/
+        # "false" — passing Python bools through urlencode yields "True" which
+        # Deepgram rejects as HTTP 400 (and deepgram-sdk 6.0.2 has this bug).
+        params = {
+            "model": self.model,
+            "language": self.language,
+            "encoding": "linear16",
+            "channels": CHANNELS,
+            "sample_rate": SAMPLE_RATE,
+            "interim_results": "true",
+            "punctuate": "true",
+            "smart_format": "true",
+            "endpointing": 300,
+        }
+        url = "wss://api.deepgram.com/v1/listen?" + urlencode(params)
+        headers = {"Authorization": f"Token {self.api_key}"}
+
+        try:
+            with ws_client.connect(url, additional_headers=headers) as ws:
                 recv_done = threading.Event()
 
                 def recv_loop() -> None:
                     try:
-                        for msg in ws:
-                            if isinstance(msg, ListenV1Results):
+                        for raw in ws:
+                            if not isinstance(raw, (str, bytes)):
+                                continue
+                            if isinstance(raw, bytes):
                                 try:
-                                    alt = msg.channel.alternatives[0]
-                                    sentence = (alt.transcript or "").strip()
-                                except (AttributeError, IndexError):
+                                    raw = raw.decode("utf-8", "replace")
+                                except Exception:  # noqa: BLE001
                                     continue
-                                if not sentence:
-                                    continue
-                                # speech_final is endpointing-triggered (stricter);
-                                # fall back to is_final for interim-result accumulation.
-                                if msg.speech_final or msg.is_final:
-                                    self._final_text = sentence
-                                    self._on_final(sentence)
-                                else:
-                                    self._on_interim(sentence)
+                            try:
+                                msg = _json.loads(raw)
+                            except ValueError:
+                                continue
+                            # Only care about the Results frames — skip Metadata/
+                            # UtteranceEnd/SpeechStarted for now.
+                            if msg.get("type") != "Results":
+                                continue
+                            try:
+                                sentence = (
+                                    msg["channel"]["alternatives"][0].get("transcript") or ""
+                                ).strip()
+                            except (KeyError, IndexError, TypeError):
+                                continue
+                            if not sentence:
+                                continue
+                            is_final = bool(msg.get("is_final")) or bool(msg.get("speech_final"))
+                            if is_final:
+                                self._final_text = sentence
+                                self._on_final(sentence)
+                            else:
+                                self._on_interim(sentence)
                     except Exception as recv_err:  # noqa: BLE001
                         if not self._stop.is_set():
                             log.warning("deepgram recv error: %s", recv_err)
@@ -154,11 +175,14 @@ class VoiceSession:
                     if self._stop.is_set():
                         raise sd.CallbackStop
                     try:
-                        ws.send_media(bytes(indata))
+                        # indata is a cffi buffer (RawInputStream); bytes() copies it out.
+                        ws.send(bytes(indata))
                     except Exception as send_err:  # noqa: BLE001
                         log.warning("deepgram send failed: %s", send_err)
 
-                with sd.InputStream(
+                # RawInputStream avoids sounddevice's numpy dependency by handing
+                # us a plain CFFI buffer instead of an ndarray.
+                with sd.RawInputStream(
                     samplerate=SAMPLE_RATE,
                     channels=CHANNELS,
                     dtype=DTYPE,
@@ -170,7 +194,7 @@ class VoiceSession:
 
                 # Tell Deepgram we're done so it flushes remaining transcripts.
                 try:
-                    ws.send_close_stream()
+                    ws.send(_json.dumps({"type": "CloseStream"}))
                 except Exception:  # noqa: BLE001
                     pass
 
