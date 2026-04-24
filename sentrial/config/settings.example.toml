@@ -1,0 +1,37 @@
+# Sentrial settings — non-secret runtime configuration.
+# Secrets live in Keychain (see `security find-generic-password -s com.sentrial.*`).
+# Copy this file to settings.toml to override defaults.
+
+[model]
+# Swap to the newest Opus release as it becomes available.
+name = "claude-opus-4-6"
+max_tokens = 4096
+max_tool_iterations = 12
+
+[daemon]
+webhook_port = 8765
+# If true, Sentrial accepts inbound connections from any interface. Leave false in production.
+webhook_public = false
+
+[task_runner]
+max_concurrent_jobs = 3
+status_ping_seconds = 600  # 10 min — send a "still working" ping
+
+[notify]
+# Priority list — first channel that succeeds wins.
+# Available: "imessage", "pushover"
+priority = ["imessage", "pushover"]
+
+[scheduler]
+morning_brief = "07:30"      # local time, 24h
+evening_review = "21:00"
+timezone = "America/New_York"
+
+[capabilities]
+# Enable/disable capability modules at boot. Changes require restart.
+reminders = true
+gmail = false                # requires OAuth — enable after `sentrial gmail-auth`
+calendar = false             # requires OAuth — enable after `sentrial calendar-auth`
+sentrial_pipeline = true
+creative = true
+pursuit = false

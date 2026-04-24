@@ -1,0 +1,13 @@
+[build]
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "python -m sentrial.core.daemon run"
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 10
+
+# Mount a persistent volume at /data so audit log, memory, jobs survive redeploys.
+# Add the volume in the Railway dashboard → Settings → Volumes → Mount path: /data

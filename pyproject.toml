@@ -1,0 +1,61 @@
+[project]
+name = "sentrial"
+version = "0.1.0"
+description = "Sentrial — personal assistant for Liam. Claude-powered, MCP-based, approval-gated."
+requires-python = ">=3.11"
+authors = [{ name = "Liam", email = "liamtride@gmail.com" }]
+
+dependencies = [
+    # Core agent + MCP
+    "claude-agent-sdk>=0.0.15",
+    "mcp>=1.0.0",
+    "anthropic>=0.39.0",
+
+    # HTTP server (webhook input)
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+
+    # Scheduling
+    "apscheduler>=3.10.4",
+
+    # Menubar
+    "rumps>=0.4.0",
+
+    # Data / validation
+    "pydantic>=2.8.0",
+    "pydantic-settings>=2.4.0",
+
+    # Google APIs (Gmail + Calendar)
+    "google-api-python-client>=2.140.0",
+    "google-auth-httplib2>=0.2.0",
+    "google-auth-oauthlib>=1.2.1",
+
+    # Notifications
+    "requests>=2.32.0",
+
+    # Dev ergonomics
+    "python-dotenv>=1.0.1",
+    "rich>=13.7.0",
+    "typer>=0.12.0",
+
+    # Web push + crypto (VAPID)
+    "pywebpush>=2.0.0",
+    "cryptography>=42.0.0",
+]
+
+[project.scripts]
+sentrial = "sentrial.core.daemon:cli"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["sentrial"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
