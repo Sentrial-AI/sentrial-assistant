@@ -1,0 +1,73 @@
+# Sentrial user profile — baseline template.
+#
+# This file is the shape the evolution loop writes into. Each leaf is
+# ObservedField with value + confidence + evidence_count + last_updated.
+# On reset-to-base, evolved values are cleared; structure stays.
+#
+# Field-level weighted-evidence update:
+#   new_confidence = old_confidence * decay + observation_weight
+#   new_value      = observation_value if confidence clears threshold, else keep old
+#
+# The PROFILE WRITER never overwrites a high-confidence value with low-confidence
+# evidence; it only updates when confidence grows or agrees.
+
+schema_version: 1
+
+preferences:
+  response_terseness:
+    value: "terse"           # terse | balanced | verbose
+    confidence: 0.0
+    evidence_count: 0
+    last_updated: null
+  format_bullet_lists:
+    value: false             # bool — allow bullet lists in chat output
+    confidence: 0.0
+    evidence_count: 0
+    last_updated: null
+  format_section_headers:
+    value: false             # bool — allow section headers
+    confidence: 0.0
+    evidence_count: 0
+    last_updated: null
+  clarification_tolerance:
+    value: "low"             # low | medium | high — how often to ask vs. act
+    confidence: 0.0
+    evidence_count: 0
+    last_updated: null
+  scope_preview_expectation:
+    value: "always_before_action"   # always | large_only | never
+    confidence: 0.0
+    evidence_count: 0
+    last_updated: null
+
+vocabulary:
+  # Learned shorthand and aliases. { term: canonical }. Populated by distillation.
+  shorthand: {}
+
+schedule:
+  timezone:
+    value: "America/Denver"
+    confidence: 0.0
+    evidence_count: 0
+    last_updated: null
+  business_hours:
+    value: "Mon-Sat 09:00-18:00"
+    confidence: 0.0
+    evidence_count: 0
+    last_updated: null
+  do_not_disturb:
+    value: []                # list of ranges "HH:MM-HH:MM"
+    confidence: 0.0
+    evidence_count: 0
+    last_updated: null
+
+knowledge:
+  # High-signal self-descriptions Liam has said about himself.
+  strong_in: []             # list of topics/tools he's confident in
+  learning: []              # list of topics he's actively learning
+  avoid: []                 # list of topics to not presume expertise in
+
+active_focus:
+  # Short-lived context: what he's actively working on right now.
+  projects: []              # list of project name strings (canonical)
+  clients: []               # list of client name strings (canonical)
