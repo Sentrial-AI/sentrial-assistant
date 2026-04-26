@@ -2650,13 +2650,26 @@ pushBtn.addEventListener('click', async () => {
       endpointing: '150',
       utterance_end_ms: '800',
     });
+    // Diagnostic: log key shape (no value!) before opening WS. Funneled
+    // through console_bridge → menubar.err.log so we can verify what arrived
+    // here matches what the server intended to send.
+    console.log('[VOICE_DIAG] dgKey received len=' + (dgKey || '').length
+                + ' first2=' + (dgKey || '').slice(0, 2)
+                + ' last2=' + (dgKey || '').slice(-2)
+                + ' nonAscii=' + /[^\x20-\x7e]/.test(dgKey || ''));
     // Deepgram lets us auth via Sec-WebSocket-Protocol because browsers can't
     // set the Authorization header. Subprotocol form: ["token", "<API_KEY>"].
+    const wsCreatedAt = performance.now();
     const ws = new WebSocket(
       'wss://api.deepgram.com/v1/listen?' + params.toString(),
       ['token', dgKey],
     );
     ws.binaryType = 'arraybuffer';
+    ws.addEventListener('open', () => {
+      console.log('[VOICE_DIAG] WS OPEN after ' + Math.round(performance.now() - wsCreatedAt)
+                  + 'ms readyState=' + ws.readyState
+                  + ' protocol=' + JSON.stringify(ws.protocol));
+    });
 
     ws.addEventListener('message', (ev) => {
       let msg;
@@ -2675,10 +2688,17 @@ pushBtn.addEventListener('click', async () => {
     // so we can tell WHY Deepgram rejected (4001/4003/4008 = auth/payment/
     // unsupported model, 1006 = network). Without this, "connection error"
     // is opaque.
-    ws.addEventListener('error', () => {
+    ws.addEventListener('error', (ev) => {
+      console.log('[VOICE_DIAG] WS ERROR after ' + Math.round(performance.now() - wsCreatedAt)
+                  + 'ms readyState=' + ws.readyState);
       window.sentrialVoiceError('Deepgram connection error (handshake)');
     });
     ws.addEventListener('close', (ev) => {
+      console.log('[VOICE_DIAG] WS CLOSE after ' + Math.round(performance.now() - wsCreatedAt)
+                  + 'ms code=' + ev.code
+                  + ' wasClean=' + ev.wasClean
+                  + ' reason=' + JSON.stringify(ev.reason || '')
+                  + ' readyState=' + ws.readyState);
       // 1000 = normal close; anything else surfaced for diagnostics.
       if (ev.code === 1000) return;
       const reason = ev.reason || '';
@@ -3899,9 +3919,16 @@ function startNewChat() {
 (function setupDetach() {
   const btn = document.getElementById('chat-detach');
   if (!btn) return;
-  if (!isNative()) { btn.hidden = true; return; }
+  // Inline native-shell check — isNative() lives inside the voice IIFE and
+  // isn't reachable here. Calling it threw a ReferenceError on every page
+  // load, which spammed the console and aborted this IIFE early.
+  const inNative = !!(window.webkit && window.webkit.messageHandlers
+                      && window.webkit.messageHandlers.sentrial);
+  if (!inNative) { btn.hidden = true; return; }
   btn.addEventListener('click', () => {
-    postNative({ type: 'detach' });
+    try {
+      window.webkit.messageHandlers.sentrial.postMessage({ type: 'detach' });
+    } catch {}
   });
 })();
 
