@@ -248,6 +248,41 @@ def build_app(
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "error": str(e)[:200]}
 
+    @api.get("/api/voice/test_key", dependencies=[Depends(require_auth)])
+    async def voice_test_key():
+        """Definitive check: does our Deepgram key actually authenticate?
+        Hits Deepgram's /v1/projects endpoint (cheap authed read) and reports
+        the HTTP status. 200 = key works (so 1006 close is something else);
+        401/403 = key is bad / billing issue (the actual cause)."""
+        import httpx
+        k = (
+            kc.get("nova3_api_key")
+            or kc.get("deepgram_api_key")
+            or os.environ.get("NOVA3_API_KEY")
+            or os.environ.get("DEEPGRAM_API_KEY")
+        )
+        if not k:
+            return {"ok": False, "error": "no key configured anywhere"}
+        raw_len = len(k)
+        k = k.strip().strip('"').strip("'")
+        had_whitespace = (raw_len != len(k))
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                r = await client.get(
+                    "https://api.deepgram.com/v1/projects",
+                    headers={"Authorization": f"Token {k}"},
+                )
+            return {
+                "ok": r.status_code == 200,
+                "status": r.status_code,
+                "key_prefix": k[:6] + "..." + k[-2:] if len(k) >= 8 else "<short>",
+                "key_length": len(k),
+                "had_whitespace": had_whitespace,
+                "body": r.text[:300] if r.status_code != 200 else "ok",
+            }
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": str(e)[:200]}
+
     @api.get("/api/voice/deepgram_key", dependencies=[Depends(require_auth)])
     async def deepgram_key():
         """
@@ -256,9 +291,19 @@ def build_app(
         our server and sidesteps the macOS TCC problem for bundled Python.
         The browser is authenticated so this is scoped to the owner.
         """
-        k = kc.get("nova3_api_key") or kc.get("deepgram_api_key") or os.environ.get("NOVA3_API_KEY")
+        k = (
+            kc.get("nova3_api_key")
+            or kc.get("deepgram_api_key")
+            or os.environ.get("NOVA3_API_KEY")
+            or os.environ.get("DEEPGRAM_API_KEY")
+        )
         if not k:
             raise HTTPException(status_code=503, detail="no deepgram key configured")
+        # Strip whitespace + quotes that often sneak in when pasting from
+        # terminals or Railway's env var UI. Deepgram rejects auth subprotocols
+        # with a trailing \n / surrounding quotes, with a confusing "connection
+        # error" rather than a structured 4001.
+        k = k.strip().strip('"').strip("'")
         return {"key": k}
 
     @api.get("/api/push/vapid")
