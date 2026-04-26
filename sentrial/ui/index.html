@@ -483,30 +483,26 @@
     letter-spacing: 0.04em; text-transform: uppercase;
     color: var(--text-3); margin: 0 0 10px;
   }
-  /* Native <select> styled to match input + button surfaces. Custom chevron
-     so we don't get the OS's default control look that clashes with the
-     rest of the app. */
+  /* Native <select> styled to match input + button surfaces. We keep the
+     OS native chevron (skipping appearance:none) because forcing
+     appearance:none in WKWebView has quirky rendering — sometimes the
+     select renders as an empty box. color-scheme:dark asks the OS to
+     paint both the closed control AND the popup in dark mode so the
+     options menu matches the rest of the app. */
   .settings-group select.styled {
-    appearance: none; -webkit-appearance: none;
+    color-scheme: dark;
+    display: block; box-sizing: border-box;
     width: 100%; max-width: 380px;
-    padding: 11px 36px 11px 14px;
-    font: inherit; font-size: 14px;
+    padding: 11px 14px;
+    font-family: inherit; font-size: 14px; line-height: 1.4;
     color: var(--text); background-color: var(--surface);
     border: 1px solid var(--border);
     border-radius: 10px;
     transition: border-color 0.15s ease, background 0.15s ease;
     cursor: pointer;
-    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'><path d='M1 1l5 5 5-5' fill='none' stroke='%239ca3af' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/></svg>");
-    background-repeat: no-repeat;
-    background-position: right 14px center;
   }
   .settings-group select.styled:hover { border-color: var(--border-strong); background-color: var(--elevated); }
   .settings-group select.styled:focus { outline: none; border-color: var(--accent); }
-  .settings-group select.styled option { color: var(--text); background: var(--surface); }
-  .settings-group select.styled optgroup {
-    color: var(--text-3); font-style: normal; font-weight: 500;
-    letter-spacing: 0.04em; text-transform: uppercase; font-size: 11px;
-  }
   .mcp-row {
     display: flex; justify-content: space-between; align-items: center;
     padding: 12px 14px;
