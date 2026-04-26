@@ -31,13 +31,13 @@ DEFAULT_MODEL = "claude-opus-4-6"
 # lessons so Haiku has enough context to answer most voice questions
 # without reaching for tools.
 VOICE_MODEL = "claude-haiku-4-5-20251001"
-# Hard cap on voice reply length. Was 512, lowered to 220 because Haiku will
-# happily produce 30s of audio for an open-ended question ("what are you
-# capable of") if the prompt only suggests brevity. 220 ≈ ~30-40 spoken words
-# ≈ 7-10 seconds of speech, which is the right ceiling for a conversation.
-# If the user asks for detail explicitly, the model can still ask "want more?"
-# and the next turn lifts to whatever fits in 220 again.
-VOICE_MAX_TOKENS = 220
+# Hard cap on voice reply length. Was 220 — too tight, the model kept
+# hitting max_tokens (which surfaces as "unexpected stop_reason: max_tokens"
+# in the UI). Bumped to 320 — still ≈ ~50 spoken words / ~10s of speech,
+# but enough headroom for the gather-confirm-submit conversational flow
+# that includes a brief read-back. The model is still instructed to be
+# terse via the voice prompt rules.
+VOICE_MAX_TOKENS = 320
 DEFAULT_MAX_TOKENS = 4096
 MAX_TOOL_ITERATIONS = 12        # guardrail against runaway loops
 
@@ -223,6 +223,15 @@ class Agent:
                 if final_msg.stop_reason == "end_turn":
                     break
 
+                # max_tokens = the model bumped against the cap mid-reply.
+                # Treat as soft-finish: keep what we got and stop. The text
+                # has already been streamed token-by-token to the user via
+                # the {"type":"text"} events above, so the user heard it;
+                # we just need to finalize without erroring out the turn.
+                if final_msg.stop_reason == "max_tokens":
+                    log.info("stop_reason=max_tokens — using truncated reply")
+                    break
+
                 if final_msg.stop_reason == "tool_use":
                     tool_blocks = [
                         b for b in final_assistant_content
@@ -381,7 +390,12 @@ class Agent:
             # Capture assistant content block list for the running transcript
             messages.append({"role": "assistant", "content": resp.content})
 
-            if resp.stop_reason == "end_turn":
+            # max_tokens is treated identically to end_turn — keep the partial
+            # text we got. Was previously falling through to "unexpected
+            # stop_reason: max_tokens" error in the UI.
+            if resp.stop_reason in ("end_turn", "max_tokens"):
+                if resp.stop_reason == "max_tokens":
+                    log.info("stop_reason=max_tokens — using truncated reply")
                 text = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
                 memory.log_turn(conv_id, channel, {"role": "assistant", "content": text})
                 # Bump self-profile counters; first turn of a conversation also

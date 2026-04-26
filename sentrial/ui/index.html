@@ -843,6 +843,48 @@
   .dash-add-btn:hover {
     background: var(--accent-muted); color: var(--accent); border-color: var(--accent);
   }
+  /* ---------- Proposals card on Dashboard ---------- */
+  .dash-card-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .dash-card-meta {
+    font-family: var(--mono); font-size: 11px; color: var(--text-3);
+  }
+  .dash-card-empty {
+    color: var(--text-3); font-size: 13px; padding: 6px 0 4px;
+  }
+  .prop-list { display: flex; flex-direction: column; gap: 4px; }
+  .prop-row {
+    display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center;
+    padding: 10px 4px; border-bottom: 1px solid var(--border-soft, rgba(255,255,255,0.04));
+    transition: background 0.12s ease;
+  }
+  .prop-row:last-child { border-bottom: none; }
+  .prop-row:hover { background: rgba(255,255,255,0.025); }
+  .prop-row-main { min-width: 0; }
+  .prop-row-client {
+    font-size: 14px; color: var(--text); font-weight: 500;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .prop-row-meta {
+    margin-top: 4px; display: flex; align-items: center; gap: 6px;
+    font-size: 11px;
+  }
+  .prop-badge {
+    padding: 2px 7px; border-radius: 4px;
+    font-family: var(--mono); font-size: 10px; letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+  .prop-badge-pursuit { background: rgba(255, 90, 60, 0.16); color: #ff8c75; }
+  .prop-badge-sentrial { background: rgba(125, 211, 252, 0.14); color: var(--accent); }
+  .prop-meta-fmt { color: var(--text-3); font-family: var(--mono); }
+  .prop-row-status {
+    font-family: var(--mono); font-size: 10px;
+    letter-spacing: 0.08em; text-transform: uppercase;
+    padding: 3px 8px; border-radius: 4px;
+  }
+  .prop-status-ready    { color: #4ade80; background: rgba(74, 222, 128, 0.12); }
+  .prop-status-running  { color: #fbbf24; background: rgba(251, 191, 36, 0.12); }
+  .prop-status-pending  { color: var(--text-2); background: rgba(255,255,255,0.05); }
+  .prop-status-failed   { color: #f87171; background: rgba(248, 113, 113, 0.12); }
 
   /* Meetings list */
   .meeting-list { display: flex; flex-direction: column; gap: 6px; }
@@ -1679,7 +1721,7 @@ document.getElementById('logout').addEventListener('click', () => {
 // opening the Aura WS — takes precedence over /api/voice/config which is
 // only consulted as a fallback.
 const VOICE_KEY = 'sentrial.voice';
-const VOICE_DEFAULT = 'aura-helios-en';   // Aura-1 UK male — confirmed British accent
+const VOICE_DEFAULT = 'aura-2-arcas-en';  // Aura-2 US male, professional — crisp default. Switch via Settings.
 
 (function setupVoiceSelector() {
   const sel = document.getElementById('voice-select');
@@ -3745,6 +3787,12 @@ pushBtn.addEventListener('click', async () => {
     }
     if (active && mySeq === turnSeq) {
       setState('listening');
+      // Force-clear the audio-driven orb pulse — without this, the
+      // easedExternalPulse from Sentrial's just-finished speech keeps
+      // the orb spinning fast for ~1-2s after the color flips, making
+      // it FEEL like still-speaking even though state changed. Mic-level
+      // input will re-energize the pulse the moment the user talks.
+      clearExternalPulse();
       transcript.classList.remove('response');
       transcript.textContent = '';
       hint.textContent = "I'm listening.";
@@ -4017,7 +4065,7 @@ pushBtn.addEventListener('click', async () => {
   // so voice never goes silent — quality dips to the system voice only in
   // that degraded case.
   let _auraKey = null;
-  let _auraVoice = 'aura-helios-en';   // Aura-1 helios IS UK male; aura-2-helios-en doesn't exist
+  let _auraVoice = 'aura-2-arcas-en';  // Aura-2 — crisper than Aura-1; user found the British Aura-1 voices robotic. Override via Settings → Voice.
   let _auraAudio = null;
   let _auraCtx = null;
   let _auraRaf = 0;
@@ -4474,6 +4522,7 @@ function renderToday({ today: d, reminders, notes, weather }) {
       </div>
       <div class="dash-col">
         ${renderTodosCard(normalTodos, done, total, pct, d.todos_error)}
+        ${renderProposalsCard(d.proposals || [])}
         ${renderNotesCard(notes)}
       </div>
       <div class="dash-col">
@@ -4483,6 +4532,72 @@ function renderToday({ today: d, reminders, notes, weather }) {
     </div>
   `;
 }
+
+function renderProposalsCard(proposals) {
+  // Show recent proposals (running + done) so Liam can see what's in flight
+  // and click through to preview / open. Empty state hides if there's
+  // genuinely nothing to show.
+  if (!proposals || proposals.length === 0) {
+    return `<div class="dash-card">
+      <div class="dash-card-head"><span class="dash-card-title">Proposals</span></div>
+      <div class="dash-card-empty">No proposals yet — ask Sentrial to draft one.</div>
+    </div>`;
+  }
+  const items = proposals.slice(0, 8).map(p => {
+    const brand = (p.brand || 'sentrial').toLowerCase();
+    const fmt = (p.format || 'major') === 'one_pager' ? 'one-pager' : 'full';
+    const brandLabel = brand === 'pursuit' ? 'Pursuit' : 'Sentrial';
+    const brandClass = brand === 'pursuit' ? 'prop-badge-pursuit' : 'prop-badge-sentrial';
+    let statusLabel, statusClass;
+    if (p.ready) {
+      statusLabel = 'Ready'; statusClass = 'prop-status-ready';
+    } else if (p.status === 'running' || p.status === 'approved') {
+      statusLabel = 'Drafting'; statusClass = 'prop-status-running';
+    } else if (p.status === 'failed') {
+      statusLabel = 'Failed'; statusClass = 'prop-status-failed';
+    } else if (p.status === 'pending_approval') {
+      statusLabel = 'Pending'; statusClass = 'prop-status-pending';
+    } else {
+      statusLabel = p.status || '?'; statusClass = '';
+    }
+    const onclick = p.preview_url
+      ? `onclick="openProposalPreview('${esc(p.preview_url)}')"`
+      : '';
+    const cursor = p.preview_url ? 'cursor:pointer;' : '';
+    return `
+      <div class="prop-row" ${onclick} style="${cursor}">
+        <div class="prop-row-main">
+          <div class="prop-row-client">${esc(p.client)}</div>
+          <div class="prop-row-meta">
+            <span class="prop-badge ${brandClass}">${esc(brandLabel)}</span>
+            <span class="prop-meta-fmt">${esc(fmt)}</span>
+          </div>
+        </div>
+        <div class="prop-row-status ${statusClass}">${esc(statusLabel)}</div>
+      </div>
+    `;
+  }).join('');
+  return `<div class="dash-card">
+    <div class="dash-card-head"><span class="dash-card-title">Proposals</span><span class="dash-card-meta">${proposals.length}</span></div>
+    <div class="prop-list">${items}</div>
+  </div>`;
+}
+
+function openProposalPreview(url) {
+  // Same flow the agent uses via ui_action: append the bearer token so
+  // the authed /deliverables/* route accepts it, then pop a window.
+  try {
+    if (typeof window.sentrialOpenPreview === 'function') {
+      window.sentrialOpenPreview(url);
+    } else {
+      const u = new URL(url, window.location.origin);
+      u.searchParams.set('token', STATE.token || '');
+      window.open(u.toString(), 'sentrial_preview',
+        'width=820,height=1000,menubar=no,toolbar=no,location=no');
+    }
+  } catch (e) { console.warn('preview open failed:', e); }
+}
+window.openProposalPreview = openProposalPreview;
 
 function renderHeroRow(now, weather) {
   const hour = now.getHours();

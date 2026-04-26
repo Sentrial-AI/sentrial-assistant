@@ -144,13 +144,12 @@ def build_app(
         """Voice settings the PWA reads at voice-mode start. Override the
         Aura voice via the `sentrial_voice` keychain entry; default is a
         deeper, more butler-toned voice rather than Orion's snappier read."""
-        # Default: Aura-1 helios — confirmed UK male, "M"/MI6 energy.
-        # NB: aura-2-helios-en (the Aura-2 namespace) doesn't exist — Deepgram
-        # returns 400 — and Aura-2's catalogue is currently US-only despite
-        # the Greek/Roman naming. Aura-1 is where the real British accent
-        # lives. Client-side localStorage override takes precedence; this
-        # is just the fresh-device fallback.
-        voice = kc.get("sentrial_voice") or "aura-helios-en"
+        # Default: Aura-2 arcas — US male, professional, crisp audio.
+        # Was helios (Aura-1 UK male) but Liam reported it sounds robotic;
+        # Aura-1 has noticeably lower fidelity than Aura-2. Client-side
+        # localStorage override (sentrial.voice) takes precedence; this is
+        # just the fresh-device fallback.
+        voice = kc.get("sentrial_voice") or "aura-2-arcas-en"
         return {"voice": voice}
 
     @api.get("/api/voice/greeting", dependencies=[Depends(require_auth)])
@@ -728,6 +727,32 @@ def build_app(
             emails["status"] = "pending_auth"
             calendar_slot["status"] = "pending_auth"
 
+        # ---- Proposals (recent, including in-flight) ----
+        # Sourced from the task_runner, which persists to SQLite and survives
+        # restarts. Includes everything: pending, running, done, failed.
+        proposals: list[dict] = []
+        if task_runner is not None:
+            from sentrial.core import paths as _paths
+            deliv_root = _paths.deliverables_dir()
+            for j in task_runner.list_recent(20):
+                if j.kind != "proposal":
+                    continue
+                jp = j.params or {}
+                deliv = deliv_root / j.id / "proposal.html"
+                proposals.append({
+                    "id": j.id,
+                    "client": jp.get("client") or "(unknown)",
+                    "brand": jp.get("brand") or "sentrial",
+                    "format": jp.get("format") or "major",
+                    "status": j.status.value,
+                    "created_at": j.created_at,
+                    "ready": deliv.exists(),
+                    "preview_url": (
+                        f"/deliverables/{j.id}/proposal.html"
+                        if deliv.exists() else None
+                    ),
+                })
+
         return {
             "integrations": integrations,
             "todos": todos,
@@ -735,6 +760,7 @@ def build_app(
             "warnings": warnings,
             "emails": emails,
             "calendar": calendar_slot,
+            "proposals": proposals,
         }
 
     # ---- Reminders (cross-platform, web-push backed) ----
