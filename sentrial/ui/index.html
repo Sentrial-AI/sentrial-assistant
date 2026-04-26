@@ -2672,7 +2672,9 @@ pushBtn.addEventListener('click', async () => {
       ['token', dgKey],
     );
     ws.binaryType = 'arraybuffer';
+    let _wsEverOpened = false;
     ws.addEventListener('open', () => {
+      _wsEverOpened = true;
       console.log('[VOICE_DIAG] WS OPEN after ' + Math.round(performance.now() - wsCreatedAt)
                   + 'ms readyState=' + ws.readyState
                   + ' protocol=' + JSON.stringify(ws.protocol));
@@ -2705,9 +2707,17 @@ pushBtn.addEventListener('click', async () => {
                   + 'ms code=' + ev.code
                   + ' wasClean=' + ev.wasClean
                   + ' reason=' + JSON.stringify(ev.reason || '')
-                  + ' readyState=' + ws.readyState);
+                  + ' readyState=' + ws.readyState
+                  + ' everOpened=' + _wsEverOpened);
       // 1000 = normal close; anything else surfaced for diagnostics.
       if (ev.code === 1000) return;
+      // If the WS opened successfully and we're closing now, it's end-of-
+      // session (user ended voice mode, Deepgram timed out idle, etc.).
+      // Deepgram doesn't always send a clean close frame so the browser
+      // can surface this as 1006 even though everything was fine. Only
+      // alarm + auto-diagnose when the WS NEVER reached OPEN — that's the
+      // signature of an actual handshake/auth failure.
+      if (_wsEverOpened) return;
       const reason = ev.reason || '';
       const codeName = ({
         1006: 'network/abnormal',
