@@ -2516,6 +2516,7 @@ pushBtn.addEventListener('click', async () => {
     stopGlobeLoop();
     stopSpeakingIfAny();
     stopBrowserVoice();
+    if (typeof _wsAuraClose === 'function') _wsAuraClose();
     postNative({ type: 'voice_exit' });
     if (mobileRecog) {
       try { mobileRecog.stop(); } catch {}
@@ -2558,6 +2559,12 @@ pushBtn.addEventListener('click', async () => {
     // Prefetch the Aura key in parallel with mic setup so the first TTS
     // reply doesn't pay the /api/voice/deepgram_key round-trip.
     if (typeof prefetchAuraKey === 'function') prefetchAuraKey();
+    // Pre-warm the AudioContext + Aura WebSocket. We're inside the user-gesture
+    // chain (Right-Option press → this fn) so the AudioContext can unlock,
+    // and the WS handshake can complete in parallel with mic setup. By the
+    // time the user finishes their first sentence, both are ready and the
+    // first audio plays at WS-level latency (~200ms vs ~500ms REST).
+    if (typeof _wsAuraEnsure === 'function') _wsAuraEnsure().catch(() => {});
 
     let stream;
     try {
@@ -2730,6 +2737,174 @@ pushBtn.addEventListener('click', async () => {
     return;
   };
 
+  // ----- Aura WebSocket TTS engine -----
+  //
+  // wss://api.deepgram.com/v1/speak — same Aura models as REST, same billing,
+  // same voice quality. The win is first-audio latency: ~200-300ms vs
+  // ~400-700ms for REST, because we send text chunks as sentences arrive
+  // and audio chunks stream back interleaved with synthesis.
+  //
+  // Auth uses Sec-WebSocket-Protocol — `new WebSocket(url, ['token', key])` —
+  // because browsers can't set Authorization headers on WS handshakes.
+  //
+  // PCM (linear16 @ 24kHz) chosen over mp3 because raw PCM plays via
+  // AudioBufferSourceNode without decodeAudioData, which avoids the same
+  // autoplay-policy headaches that bit the earlier streaming attempt.
+  //
+  // Connection is opened at voice-mode start (in the user-gesture chain so
+  // the AudioContext unlocks) and reused across turns. Falls back to the
+  // per-sentence REST path if WS fails to open or errors mid-stream — voice
+  // never goes silent.
+  class AuraWS {
+    constructor(key, voice, ctx) {
+      this.ctx = ctx;
+      this.voice = voice;
+      this.url = 'wss://api.deepgram.com/v1/speak?model=' + encodeURIComponent(voice)
+                 + '&encoding=linear16&sample_rate=24000';
+      this.ws = new WebSocket(this.url, ['token', key]);
+      this.ws.binaryType = 'arraybuffer';
+      this.nextStart = 0;
+      this.sources = [];
+      this.firstAudioFired = false;
+      this.onFirstAudio = null;   // fires at the moment first audio actually plays
+      this.onPulse = null;        // (rms, ttlMs) — feed external pulse for orb
+      this.errored = false;
+      this.ws.addEventListener('message', (ev) => this._onMessage(ev));
+      this.ws.addEventListener('error', () => { this.errored = true; });
+      this.ws.addEventListener('close', () => { this.errored = true; });
+    }
+
+    async waitOpen(timeoutMs) {
+      timeoutMs = timeoutMs || 4000;
+      if (this.ws.readyState === WebSocket.OPEN) return true;
+      if (this.ws.readyState !== WebSocket.CONNECTING) return false;
+      return new Promise((res) => {
+        const ok = () => res(true);
+        const bad = () => res(false);
+        this.ws.addEventListener('open', ok, { once: true });
+        this.ws.addEventListener('error', bad, { once: true });
+        this.ws.addEventListener('close', bad, { once: true });
+        setTimeout(() => res(false), timeoutMs);
+      });
+    }
+
+    _onMessage(ev) {
+      if (typeof ev.data === 'string') {
+        // Metadata frames (Metadata, Flushed, Cleared). Not critical.
+        return;
+      }
+      if (!ev.data || ev.data.byteLength === 0) return;
+      const pcm = new Int16Array(ev.data);
+      if (pcm.length === 0) return;
+
+      const float = new Float32Array(pcm.length);
+      for (let i = 0; i < pcm.length; i++) float[i] = pcm[i] / 32768;
+
+      const buf = this.ctx.createBuffer(1, float.length, 24000);
+      buf.copyToChannel(float, 0);
+
+      const src = this.ctx.createBufferSource();
+      src.buffer = buf;
+      // Slightly snappier delivery — same playbackRate as the HTMLAudioElement
+      // path. Voice still natural, ~5-10% faster perceived.
+      src.playbackRate.value = 1.10;
+      src.connect(this.ctx.destination);
+
+      const now = this.ctx.currentTime;
+      const start = Math.max(now, this.nextStart);
+      try { src.start(start); } catch (e) { return; }
+      // Adjusted duration for playbackRate so chunks chain seamlessly.
+      this.nextStart = start + (buf.duration / 1.10);
+      this.sources.push(src);
+      src.onended = () => {
+        this.sources = this.sources.filter((s) => s !== src);
+      };
+
+      // First-audio callback — schedule it for when audio actually starts
+      // (start time may be in the future if we're queued).
+      if (!this.firstAudioFired) {
+        this.firstAudioFired = true;
+        const delayMs = Math.max(0, (start - now) * 1000);
+        const cb = this.onFirstAudio;
+        if (cb) setTimeout(cb, delayMs);
+      }
+
+      // Synthetic pulse from chunk peak amplitude — drives orb breathing.
+      if (this.onPulse) {
+        let peak = 0;
+        for (let i = 0; i < float.length; i++) {
+          const a = float[i] >= 0 ? float[i] : -float[i];
+          if (a > peak) peak = a;
+        }
+        const shaped = Math.min(1, Math.pow(peak * 4.2, 0.50));
+        if (shaped > 0.02) this.onPulse(shaped, Math.max(120, buf.duration * 1000));
+      }
+    }
+
+    speak(text) {
+      if (this.ws.readyState !== WebSocket.OPEN || this.errored) return false;
+      try {
+        this.ws.send(JSON.stringify({ type: 'Speak', text: text }));
+        return true;
+      } catch { this.errored = true; return false; }
+    }
+
+    flush() {
+      if (this.ws.readyState !== WebSocket.OPEN) return;
+      try { this.ws.send(JSON.stringify({ type: 'Flush' })); } catch {}
+    }
+
+    clear() {
+      if (this.ws.readyState === WebSocket.OPEN) {
+        try { this.ws.send(JSON.stringify({ type: 'Clear' })); } catch {}
+      }
+      for (const s of this.sources) { try { s.stop(); } catch {} }
+      this.sources = [];
+      this.nextStart = 0;
+      this.firstAudioFired = false;
+    }
+
+    close() {
+      this.clear();
+      try { this.ws.close(); } catch {}
+    }
+
+    isReady() {
+      return this.ws.readyState === WebSocket.OPEN && !this.errored;
+    }
+  }
+
+  let _wsAura = null;
+
+  async function _wsAuraEnsure() {
+    if (_wsAura && _wsAura.isReady()) return _wsAura;
+    if (_wsAura) { try { _wsAura.close(); } catch {} _wsAura = null; }
+    const key = await _loadAuraKey();
+    if (!key) return null;
+    // Make sure _auraCtx exists and is unlocked. This is called from the
+    // voice-mode-start gesture chain, so resume() will succeed.
+    try {
+      if (!_auraCtx) _auraCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (_auraCtx.state === 'suspended') await _auraCtx.resume();
+    } catch {}
+    if (!_auraCtx) return null;
+    const inst = new AuraWS(key, _auraVoice, _auraCtx);
+    const ok = await inst.waitOpen(4000);
+    if (!ok) {
+      try { inst.close(); } catch {}
+      return null;
+    }
+    _wsAura = inst;
+    return inst;
+  }
+
+  // Tear down the WS when voice mode exits — frees the connection and
+  // stops the server from billing for an idle session.
+  function _wsAuraClose() {
+    if (_wsAura) { try { _wsAura.close(); } catch {} _wsAura = null; }
+  }
+  window._sentrialCloseAuraWS = _wsAuraClose;
+
   // ----- Streaming voice turn: per-sentence Aura TTS -----
   //
   // /inbound_stream returns SSE; we accumulate text deltas, split on sentence
@@ -2762,6 +2937,15 @@ pushBtn.addEventListener('click', async () => {
     _ttsActive = false;
     _ttsFirstAudio = false;
     _ttsTeardownCurrent();
+    // If the WS is up, hand it our per-turn callbacks so first-audio and
+    // pulse drive the right UI state.
+    if (_wsAura) {
+      _wsAura.clear();
+      _wsAura.onFirstAudio = _ttsFlipToSpeakingIfFirst;
+      _wsAura.onPulse = (level, ttl) => {
+        if (level > 0.02) setExternalPulse(level, ttl);
+      };
+    }
   }
 
   function _ttsTeardownCurrent() {
@@ -2782,6 +2966,7 @@ pushBtn.addEventListener('click', async () => {
     _ttsQ = [];
     _ttsActive = false;
     _ttsTeardownCurrent();
+    if (_wsAura) _wsAura.clear();   // discard server-side queue + cut in-flight buffers
     clearExternalPulse();
   }
   // Expose so stopSpeakingIfAny() can flush the streamed queue too.
@@ -2807,7 +2992,19 @@ pushBtn.addEventListener('click', async () => {
   }
 
   function _streamSpeak(text) {
-    // Public name kept for clarity; routes to the Aura queue.
+    // Public name kept for clarity. Preferred path: Aura WebSocket (lowest
+    // first-audio latency). Fallback: per-sentence REST queue (current
+    // proven path). Last-ditch fallback inside the REST queue itself is
+    // speechSynthesis. So three layers, never silent.
+    if (_ttsStop) return;
+    text = stripForSpeech(text);
+    if (!text) return;
+
+    if (_wsAura && _wsAura.isReady()) {
+      const sent = _wsAura.speak(text);
+      if (sent) return;
+    }
+    // WS not ready / errored — degrade to REST per-sentence path.
     _ttsEnqueue(text);
   }
 
@@ -2840,9 +3037,11 @@ pushBtn.addEventListener('click', async () => {
     if (_ttsStop) { _ttsActive = false; return; }
 
     if (!blob) {
-      _ttsFlipToSpeakingIfFirst();
-      // Browser fallback for this one sentence; advances queue on done.
-      speakBrowser(item.text, _ttsDrain);
+      // Browser fallback for this one sentence. Don't pre-flip state — the
+      // utterance's onstart fires when the system actually starts speaking,
+      // which is when the orb should turn yellow. Keeps the "thinking until
+      // audio" guarantee even on the fallback path.
+      speakBrowser(item.text, _ttsDrain, _ttsFlipToSpeakingIfFirst);
       return;
     }
 
@@ -2856,7 +3055,7 @@ pushBtn.addEventListener('click', async () => {
 
     const url = URL.createObjectURL(blob);
     const audio = new Audio(url);
-    audio.playbackRate = 1.06;   // slightly snappier delivery — closer to a Jarvis pace
+    audio.playbackRate = 1.10;   // slightly snappier delivery — closer to a Jarvis pace; matches WS path
 
     let mediaSrc = null;
     let analyser = null;
@@ -2887,7 +3086,11 @@ pushBtn.addEventListener('click', async () => {
       if (_ttsRaf) { cancelAnimationFrame(_ttsRaf); _ttsRaf = 0; }
     };
 
-    audio.addEventListener('play', () => {
+    // 'playing' fires AFTER 'play' once data is actually buffered and audio
+    // begins outputting — tighter timing than 'play' (which fires on the
+    // play() call before sound). The orb-yellow flip lines up with what the
+    // ear actually hears within ~50-100ms.
+    audio.addEventListener('playing', () => {
       _ttsFlipToSpeakingIfFirst();
       if (analyser) {
         const buf = new Uint8Array(analyser.fftSize);
@@ -3028,10 +3231,16 @@ pushBtn.addEventListener('click', async () => {
     // Drain any trailing text that didn't end on punctuation.
     if (textBuf.trim()) _streamSpeak(textBuf.trim());
 
-    // Wait for the queue to drain (Aura fetches + playback) before flipping
-    // back to listening. Voice mode shouldn't race the user with overlapping
-    // state changes.
-    while (_ttsActive || _ttsQ.length > 0 || _ttsCurrentAudio) {
+    // If we're on the WebSocket path, tell Aura to flush any buffered text
+    // so the final sentence(s) get synthesized.
+    if (_wsAura && _wsAura.isReady()) _wsAura.flush();
+
+    // Wait for everything to drain before flipping back to listening: REST
+    // queue, currently-playing HTMLAudioElement, AND any WS audio buffers
+    // still scheduled for the future. Voice mode shouldn't race the user
+    // with overlapping state changes.
+    const _wsBusy = () => !!(_wsAura && _wsAura.sources && _wsAura.sources.length > 0);
+    while (_ttsActive || _ttsQ.length > 0 || _ttsCurrentAudio || _wsBusy()) {
       if (mySeq !== turnSeq) { _ttsCancel(); return; }
       await new Promise((res) => setTimeout(res, 80));
     }
@@ -3229,7 +3438,7 @@ pushBtn.addEventListener('click', async () => {
       document.addEventListener(ev, primeOnGesture, true));
   }
 
-  function speakBrowser(text, onDone) {
+  function speakBrowser(text, onDone, onStart) {
     if (!('speechSynthesis' in window)) { onDone && onDone(); return; }
     const cleaned = stripForSpeech(text);
     if (!cleaned) { onDone && onDone(); return; }
@@ -3247,6 +3456,7 @@ pushBtn.addEventListener('click', async () => {
     u.volume = 1.0;
     if (_cachedVoice) u.voice = _cachedVoice;
     else _refreshVoice();
+    u.onstart = () => { onStart && onStart(); };
     u.onboundary = (ev) => {
       if (ev.name === 'word') setExternalPulse(0.7 + Math.random() * 0.3, 220);
     };
