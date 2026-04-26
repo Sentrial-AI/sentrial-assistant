@@ -2761,11 +2761,11 @@ pushBtn.addEventListener('click', async () => {
       interim_results: 'true',
       punctuate: 'true',
       smart_format: 'true',
-      // 400ms of silence to call utterance done. Was 150 — too tight, kept
-      // cutting Liam off mid-sentence when he paused to think. 400 is the
-      // sweet spot: long enough to let natural thinking pauses ride, short
-      // enough that the response still feels prompt after a clean stop.
-      endpointing: '400',
+      // 700ms of silence to call utterance done. Was 400 — still cut Liam
+      // off when speaking in long succession with sub-400ms breath pauses.
+      // 700ms is forgiving enough for natural thinking pauses + breath
+      // breaks; response still feels prompt after a real stop.
+      endpointing: '700',
       // NB: utterance_end_ms had been set to 800 a few commits ago — that's
       // BELOW Deepgram's documented minimum (1000), so every WS upgrade was
       // rejected with HTTP 400, which the browser masks as the opaque 1006
@@ -2803,7 +2803,12 @@ pushBtn.addEventListener('click', async () => {
       const alt = msg.channel && msg.channel.alternatives && msg.channel.alternatives[0];
       const sentence = (alt && alt.transcript || '').trim();
       if (!sentence) return;
-      if (msg.is_final || msg.speech_final) {
+      // Trigger ONLY on is_final (Deepgram has committed the segment as
+      // final transcript). speech_final fires more aggressively on
+      // sub-second pauses and was cutting Liam off mid-sentence when he
+      // spoke continuously with brief breath breaks. is_final waits for
+      // full endpointing to fire, which is what we want.
+      if (msg.is_final) {
         window.sentrialVoiceTurn(sentence);
       } else {
         window.sentrialVoiceUpdate(sentence);
@@ -2974,20 +2979,24 @@ pushBtn.addEventListener('click', async () => {
             if (this.openHangover > 0) this.openHangover--;
           }
 
-          // Gate: pass-through during voice or hangover, silence otherwise.
-          // We MUST still post a buffer to the main thread (Deepgram expects
-          // a steady stream of samples to maintain its endpointing logic);
-          // we just zero the samples when gated.
-          const gateOpen = isVoice || this.openHangover > 0;
+          // PASS-THROUGH MODE.
+          //
+          // Earlier this gated audio (sent zeros when below threshold).
+          // That broke "speak in long succession" — pauses longer than
+          // hangover sent zeros, Deepgram VAD interpreted as end-of-speech,
+          // user got cut off. The browser's noiseSuppression: true (set in
+          // getUserMedia) is already doing high-quality VAD-aware noise
+          // reduction; my custom gate was layered on top and added more
+          // false positives than benefit.
+          //
+          // Now the worklet just emits the raw PCM. The EMA tracking above
+          // still runs so we have voice/noise calibration if we want to
+          // bring the gate back later — but for now nothing is being cut.
           const pcm = new Int16Array(ch.length);
-          if (gateOpen) {
-            for (let i = 0; i < ch.length; i++) {
-              const s = Math.max(-1, Math.min(1, ch[i]));
-              pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-            }
+          for (let i = 0; i < ch.length; i++) {
+            const s = Math.max(-1, Math.min(1, ch[i]));
+            pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
           }
-          // else: leave pcm as zeros — Deepgram interprets this as silence,
-          // its VAD/endpointing handles it cleanly.
 
           this.port.postMessage(pcm.buffer, [pcm.buffer]);
 
@@ -3185,22 +3194,19 @@ pushBtn.addEventListener('click', async () => {
 
       const src = this.ctx.createBufferSource();
       src.buffer = buf;
-      // Pitch lower than baseline — detune is in cents; -150 ≈ -1.5 semitones.
-      // CRITICAL: detune affects effective playback rate as well as pitch.
-      // Per Web Audio spec:  effective_rate = playbackRate × 2^(detune/1200)
-      // With detune=-150 the audio plays at ~91.7% of natural speed, which
-      // means each buffer takes buf.duration / 0.9170 ≈ buf.duration × 1.09
-      // to actually finish. If we schedule the NEXT chunk at (start + buf.duration)
-      // without accounting for this, consecutive chunks overlap by ~9% — that
-      // overlap is exactly the stuttering / clicking / "bad-radio" sound.
+      // Natural helios pitch — detune was -150 (1.5 semitones lower) which
+      // sounded "too deep" once the click bug was fixed. Going to 0 for
+      // simplicity: no rate-vs-duration mismatch possible, the voice reads
+      // as the actual helios baseline (already a deeper UK male). If user
+      // wants deeper still, we'd need a different voice (Draco, Zeus) not
+      // pitch-shifting — the latter sacrifices audio fidelity.
       src.playbackRate.value = 1.0;
-      src.detune.value = -150;
+      src.detune.value = 0;
       src.connect(this.ctx.destination);
 
-      const PB_RATE = 1.0;
-      const DETUNE_CENTS = -150;
-      const effectiveRate = PB_RATE * Math.pow(2, DETUNE_CENTS / 1200);
-      const playbackDuration = buf.duration / effectiveRate;
+      // playbackRate=1 + detune=0 means effective rate = 1, so playback
+      // duration is just buf.duration. No correction needed.
+      const playbackDuration = buf.duration;
 
       const now = this.ctx.currentTime;
       // Tiny lookahead (30ms) — avoids scheduling into the past when network
@@ -3687,13 +3693,31 @@ pushBtn.addEventListener('click', async () => {
     // so the final sentence(s) get synthesized.
     if (_wsAura && _wsAura.isReady()) _wsAura.flush();
 
-    // Wait for everything to drain before flipping back to listening: REST
-    // queue, currently-playing HTMLAudioElement, AND any WS audio buffers
-    // still scheduled for the future. Voice mode shouldn't race the user
-    // with overlapping state changes.
-    const _wsBusy = () => !!(_wsAura && _wsAura.sources && _wsAura.sources.length > 0);
-    while (_ttsActive || _ttsQ.length > 0 || _ttsCurrentAudio || _wsBusy()) {
+    // Wait for everything to drain before flipping back to listening.
+    //
+    // For the WS path, "drained" means the AudioContext clock has passed
+    // _wsAura.nextStart (no more scheduled audio in the future) AND no
+    // sources are currently playing. Using the timestamp not the sources[]
+    // array because src.onended is unreliable on some chunks in WKWebView,
+    // which was leaving the orb stuck on 'speaking' even after audio ended.
+    //
+    // Hard 8s safety timeout — if for any reason the wait conditions
+    // somehow stay true forever, force the state flip rather than leaving
+    // the orb permanently orange.
+    const wsAudioEnded = () => {
+      if (!_wsAura) return true;
+      if (!_auraCtx) return true;
+      const ahead = (_wsAura.nextStart || 0) - _auraCtx.currentTime;
+      return ahead <= 0.05;  // 50ms slack
+    };
+    const startedWaitingAt = performance.now();
+    const MAX_WAIT_MS = 8000;
+    while (_ttsActive || _ttsQ.length > 0 || _ttsCurrentAudio || !wsAudioEnded()) {
       if (mySeq !== turnSeq) { _ttsCancel(); return; }
+      if (performance.now() - startedWaitingAt > MAX_WAIT_MS) {
+        console.log('[VOICE_DIAG] forced state flip after 8s — audio still scheduled?');
+        break;
+      }
       await new Promise((res) => setTimeout(res, 80));
     }
     if (active && mySeq === turnSeq) {
