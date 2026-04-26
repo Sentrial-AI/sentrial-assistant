@@ -139,6 +139,20 @@ def build_app(
             raise HTTPException(status_code=403, detail="bootstrap only allowed from localhost")
         return {"token": kc.ensure_token()}
 
+    @api.post("/api/voice/prewarm", dependencies=[Depends(require_auth)])
+    async def voice_prewarm():
+        """Fire all context prefetchers in parallel and return a snapshot of
+        what landed in the cache. Called by the PWA at voice-mode start so
+        the cache is hot by the time the user finishes their first sentence.
+
+        Safe to call as often as you like — each prefetcher no-ops when its
+        underlying integration isn't configured."""
+        try:
+            from sentrial.core import context_prefetch
+            return await context_prefetch.prewarm_all()
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": str(e)[:200]}
+
     @api.get("/api/voice/deepgram_key", dependencies=[Depends(require_auth)])
     async def deepgram_key():
         """

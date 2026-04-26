@@ -2565,6 +2565,12 @@ pushBtn.addEventListener('click', async () => {
     // time the user finishes their first sentence, both are ready and the
     // first audio plays at WS-level latency (~200ms vs ~500ms REST).
     if (typeof _wsAuraEnsure === 'function') _wsAuraEnsure().catch(() => {});
+    // Pre-warm the live-context cache: fires parallel calls to Notion /
+    // Calendar / Gmail / Reminders and stores results server-side. By the
+    // time the user finishes their first sentence (~3-5s), the cache is hot
+    // and the agent answers "what's on my plate" from the prompt instead of
+    // chained tool calls. Fire-and-forget — failures are silent.
+    api('POST', '/api/voice/prewarm', {}).catch(() => {});
 
     let stream;
     try {

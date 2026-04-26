@@ -197,6 +197,14 @@ class Agent:
                 user_message=user_message, assistant_reply=text,
                 prev_assistant=prev_assistant, conversation_id=conv_id,
             )
+            # Refresh the live-context cache in the background so the NEXT turn
+            # benefits from updated state (e.g. a todo we just removed is gone
+            # by the time the user asks "what's left?"). Non-blocking.
+            try:
+                from sentrial.core import context_prefetch
+                context_prefetch.schedule_background_refresh()
+            except Exception as e:  # noqa: BLE001
+                log.warning("context_prefetch refresh failed (ignored): %s", e)
             yield {"type": "done", "text": text, "conv_id": conv_id}
         except Exception as e:  # noqa: BLE001
             log.exception("turn_stream failed")
@@ -313,6 +321,13 @@ class Agent:
                     user_message=user_message, assistant_reply=text,
                     prev_assistant=prev_assistant, conversation_id=conv_id,
                 )
+                # Refresh the live-context cache in the background — same
+                # rationale as turn_stream's hook.
+                try:
+                    from sentrial.core import context_prefetch
+                    context_prefetch.schedule_background_refresh()
+                except Exception as e:  # noqa: BLE001
+                    log.warning("context_prefetch refresh failed (ignored): %s", e)
                 return text
 
             if resp.stop_reason == "tool_use":
