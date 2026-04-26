@@ -2647,8 +2647,15 @@ pushBtn.addEventListener('click', async () => {
       interim_results: 'true',
       punctuate: 'true',
       smart_format: 'true',
+      // 150ms of silence to call utterance done. Halved from 300 to cut
+      // dead-air-after-user-stops — the biggest perceived latency.
       endpointing: '150',
-      utterance_end_ms: '800',
+      // NB: utterance_end_ms had been set to 800 a few commits ago — that's
+      // BELOW Deepgram's documented minimum (1000), so every WS upgrade was
+      // rejected with HTTP 400, which the browser masks as the opaque 1006
+      // close code. THAT was the source of the "Deepgram closed:
+      // network/abnormal" error Liam was hitting. Now omitted; uses the
+      // API default (1000ms) which is fine.
     });
     // Diagnostic: log key shape (no value!) before opening WS. Funneled
     // through console_bridge → menubar.err.log so we can verify what arrived
