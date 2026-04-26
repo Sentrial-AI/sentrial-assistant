@@ -2665,8 +2665,27 @@ pushBtn.addEventListener('click', async () => {
         window.sentrialVoiceUpdate(sentence);
       }
     });
+    // Diagnostic: surface the WebSocket close code AND first ws message
+    // so we can tell WHY Deepgram rejected (4001/4003/4008 = auth/payment/
+    // unsupported model, 1006 = network). Without this, "connection error"
+    // is opaque.
     ws.addEventListener('error', () => {
-      window.sentrialVoiceError('Deepgram connection error');
+      window.sentrialVoiceError('Deepgram connection error (handshake)');
+    });
+    ws.addEventListener('close', (ev) => {
+      // 1000 = normal close; anything else surfaced for diagnostics.
+      if (ev.code === 1000) return;
+      const reason = ev.reason || '';
+      const codeName = ({
+        1006: 'network/abnormal',
+        1008: 'policy violation',
+        1011: 'server error',
+        4001: 'invalid auth',
+        4003: 'forbidden / billing',
+        4008: 'unsupported model',
+        4009: 'rate limited',
+      })[ev.code] || ('code ' + ev.code);
+      window.sentrialVoiceError('Deepgram closed: ' + codeName + (reason ? ' — ' + reason : ''));
     });
 
     // AudioContext at 16 kHz — Safari 14.1+ and Chrome respect sampleRate in

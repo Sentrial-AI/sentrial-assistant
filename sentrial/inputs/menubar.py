@@ -275,15 +275,8 @@ def run():
             # makes the SW treat this as a brand-new request and pull from
             # Railway. Without this, mid-session updates (my JS changes that
             # Liam couldn't see) sit stale in the WebView until full reload.
-            import time as _t
-            bust_url = PWA_URL + ("&" if "?" in PWA_URL else "?") + "v=" + str(int(_t.time()))
-            req = NSURLRequest.requestWithURL_cachePolicy_timeoutInterval_(
-                NSURL.URLWithString_(bust_url),
-                NSURLRequestReloadIgnoringLocalCacheData,
-                30.0,
-            )
-            self._webview.loadRequest_(req)
-            log.info("menubar loaded PWA → %s", bust_url)
+            self._last_pwa_load_at = 0.0   # used by _reload_pwa_if_stale
+            self._load_pwa()
 
             # Popover wraps the container via a view controller
             self._popover_vc = NSViewController.alloc().init()
@@ -338,6 +331,48 @@ def run():
             else:
                 self._toggle_visible()
 
+        # ------------ PWA load + auto-refresh ------------
+
+        def _load_pwa(self):
+            """Load the PWA into the WebView with a fresh ?v=<timestamp>
+            cache-bust query. Used both at menubar launch and by
+            _reload_pwa_if_stale() so new Railway deploys get picked up
+            without restarting the menubar agent.
+
+            NSURLRequestReloadIgnoringLocalCacheData bypasses HTTP cache; the
+            unique URL makes the service worker treat this as brand-new and
+            pull from origin. Without both, mid-session JS edits sit stale
+            in the WebView's memory until full reload.
+            """
+            import time as _t
+            now = _t.time()
+            bust_url = PWA_URL + ("&" if "?" in PWA_URL else "?") + "v=" + str(int(now))
+            req = NSURLRequest.requestWithURL_cachePolicy_timeoutInterval_(
+                NSURL.URLWithString_(bust_url),
+                NSURLRequestReloadIgnoringLocalCacheData,
+                30.0,
+            )
+            self._webview.loadRequest_(req)
+            self._last_pwa_load_at = now
+            log.info("menubar loaded PWA → %s", bust_url)
+
+        def _reload_pwa_if_stale(self, min_age_s: float = 30.0):
+            """Reload the WebView with a fresh cache-bust if the last load
+            was more than min_age_s ago. Means: new Railway deploys are
+            auto-picked-up the next time the user opens the popover or
+            triggers voice mode after a brief idle. No more "edits not
+            landing" because the WebView cached the page at startup.
+
+            Throttled so spam-clicking the menubar doesn't reload constantly
+            (each reload is a full page reset — voice/chat state goes away).
+            """
+            import time as _t
+            now = _t.time()
+            last = getattr(self, "_last_pwa_load_at", 0.0) or 0.0
+            if now - last < min_age_s:
+                return
+            self._load_pwa()
+
         # ------------ visibility ------------
 
         def _toggle_visible(self):
@@ -345,11 +380,16 @@ def run():
                 if self._panel.isVisible():
                     self._panel.orderOut_(None)
                 else:
+                    # Auto-refresh PWA when bringing the panel forward — picks
+                    # up Railway deploys without bouncing the menubar agent.
+                    self._reload_pwa_if_stale()
                     self._panel.makeKeyAndOrderFront_(None)
             else:
                 if self._popover.isShown():
                     self._popover.performClose_(None)
                 else:
+                    # Same auto-refresh on popover open.
+                    self._reload_pwa_if_stale()
                     btn = self._status_item.button()
                     self._popover.showRelativeToRect_ofView_preferredEdge_(
                         btn.bounds(), btn, NSRectEdgeMinY
@@ -472,6 +512,9 @@ def run():
             streaming straight to Deepgram). No Python-side mic, no TCC
             subprocess drama.
             """
+            # Auto-refresh PWA on voice mode entry too (with the same throttle)
+            # so a hotkey press picks up new deploys without opening popover first.
+            self._reload_pwa_if_stale()
             # Surface the popover / panel so the user sees the globe
             if self._detached:
                 if self._panel is not None and not self._panel.isVisible():
