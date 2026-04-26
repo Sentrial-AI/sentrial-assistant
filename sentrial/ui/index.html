@@ -1456,16 +1456,29 @@
 })();
 
 // ================ State ================
+function rid() { return Math.random().toString(36).slice(2, 10); }
+
+// Persist conversationId across reloads + menubar restarts so the assistant
+// keeps continuity. agent.turn() reloads prior turns of the conversation and
+// passes them to Claude, so reusing the same id = real memory across sessions.
+function _loadOrMintConvId() {
+  try {
+    const cached = localStorage.getItem('sentrial.conversationId');
+    if (cached && /^[a-z0-9]{4,32}$/i.test(cached)) return cached;
+  } catch {}
+  const fresh = rid();
+  try { localStorage.setItem('sentrial.conversationId', fresh); } catch {}
+  return fresh;
+}
+
 const STATE = {
   token: null,
   activeTab: 'chat',
-  conversationId: rid(),
+  conversationId: _loadOrMintConvId(),
   auditFilter: 'all',
   lastState: null,
   sending: false,
 };
-
-function rid() { return Math.random().toString(36).slice(2, 10); }
 function esc(s) { return String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
 // ================ Token / Auth ================
@@ -2435,6 +2448,26 @@ pushBtn.addEventListener('click', async () => {
 
   function setGlobeState(state) {
     const vels = STATE_VELS[state] || STATE_VELS.idle;
+    if (state === 'thinking') {
+      // Don't slow to a flat preset — inherit whatever motion was already
+      // happening (listening pulse / speaking spin) and just nudge the
+      // off-axes so the orb stops looking like it's only spinning on Y.
+      const sgnX = velX === 0 ? (Math.random() < 0.5 ? -1 : 1) : Math.sign(velX);
+      const sgnZ = velZ === 0 ? (Math.random() < 0.5 ? -1 : 1) : Math.sign(velZ);
+      tgtX = velX + sgnX * 0.32 + (Math.random() - 0.5) * 0.18;
+      tgtY = velY * 0.9 + (Math.random() - 0.5) * 0.10;
+      tgtZ = velZ + sgnZ * 0.26 + (Math.random() - 0.5) * 0.16;
+      return;
+    }
+    if (state === 'speaking') {
+      // Hard reverse current motion + grab the speaking color via CSS class.
+      // Negating live vels guarantees a visible direction-flip regardless of
+      // what the orb was doing during thinking.
+      tgtX = -velX + (Math.random() - 0.5) * 0.25;
+      tgtY = -velY - Math.sign(velY || 1) * 0.55;
+      tgtZ = -velZ + (Math.random() - 0.5) * 0.25;
+      return;
+    }
     tgtX = vels.x; tgtY = vels.y; tgtZ = vels.z;
   }
 
@@ -3130,6 +3163,7 @@ async function loadHistoryItem(convId) {
     if (!r.ok) return;
     const c = await r.json();
     STATE.conversationId = c.id;
+    try { localStorage.setItem('sentrial.conversationId', STATE.conversationId); } catch {}
     transcriptEl.innerHTML = '';
     emptyEl.style.display = 'none';
     for (const t of (c.turns || [])) {
@@ -3158,6 +3192,7 @@ function updateChatTitle(conv) {
 
 function startNewChat() {
   STATE.conversationId = rid();
+  try { localStorage.setItem('sentrial.conversationId', STATE.conversationId); } catch {}
   transcriptEl.innerHTML = '';
   emptyEl.style.display = '';
   document.getElementById('chat-title').textContent = '';

@@ -80,7 +80,12 @@ class Agent:
         # Pull the prior assistant reply for distillation's correction-detection.
         prev_assistant = self._prev_assistant_text(conv_id)
 
-        messages: list[dict] = [{"role": "user", "content": composed}]
+        # Load prior turns of this conversation so the LLM has continuity. Without
+        # this, every voice/chat turn started from a blank slate — the model
+        # had no idea what was just said. Capped at the last 20 turns to keep
+        # context cost bounded; voice replies are short so this is plenty.
+        prior_turns = self._load_prior_turns(conv_id, limit=20)
+        messages: list[dict] = prior_turns + [{"role": "user", "content": composed}]
         memory.log_turn(conv_id, channel, {"role": "user", "content": user_message})
 
         # Per-channel model + token budget. Voice routes to Haiku 4.5 with
@@ -100,11 +105,20 @@ class Agent:
                 "formatting. Be direct and conversational."
             )
 
+        # Cache the system prompt (which is large and stable across turns) so
+        # back-to-back voice turns within ~5 minutes only pay full input-token
+        # cost on the first call. Cached reads are both cheaper AND lower
+        # latency. The block-form system arg is required to attach
+        # cache_control; passing a bare string disables caching.
+        cached_system = [
+            {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
+        ]
+
         for iteration in range(MAX_TOOL_ITERATIONS):
             resp = await self.client.messages.create(
                 model=model,
                 max_tokens=max_tokens,
-                system=system,
+                system=cached_system,
                 tools=self.tools,
                 messages=messages,
             )
@@ -143,6 +157,33 @@ class Agent:
         except Exception as e:  # noqa: BLE001
             log.warning("retrieval failed (ignored): %s", e)
             return ""
+
+    def _load_prior_turns(self, conv_id: str, limit: int = 20) -> list[dict]:
+        """Return the last `limit` turns of the conversation as Anthropic-compatible
+        message dicts. Skips malformed entries. Tool-use blocks are dropped — only
+        the rendered text survives, which is fine for continuity."""
+        try:
+            conv = memory.get_conversation(conv_id)
+        except Exception:  # noqa: BLE001
+            return []
+        if not conv:
+            return []
+        out: list[dict] = []
+        for t in (conv.get("turns") or [])[-limit:]:
+            role = t.get("role")
+            if role not in ("user", "assistant"):
+                continue
+            c = t.get("content")
+            if isinstance(c, str):
+                text = c
+            elif isinstance(c, list):
+                text = "".join(b.get("text", "") for b in c if isinstance(b, dict))
+            else:
+                continue
+            if not text:
+                continue
+            out.append({"role": role, "content": text})
+        return out
 
     def _prev_assistant_text(self, conv_id: str) -> str | None:
         """Find the last assistant turn in this conversation, if any."""
