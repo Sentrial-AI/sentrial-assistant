@@ -1310,27 +1310,30 @@
             MI6-style register; Australian/American available too.
           </label>
           <select id="voice-select" class="select-styled" style="width:100%; max-width:360px;">
-            <optgroup label="British">
-              <option value="aura-2-helios-en">British Male — Helios (mature, 'M' energy)</option>
-              <option value="aura-2-draco-en">British Male — Draco (deep, authoritative)</option>
-              <option value="aura-2-pandora-en">British Female — Pandora (refined, soft)</option>
+            <optgroup label="British (Aura-1 — confirmed UK accent)">
+              <option value="aura-helios-en">British Male — Helios (transparent, 'M' energy) ★ default</option>
+              <option value="aura-athena-en">British Female — Athena (mature, intelligent)</option>
             </optgroup>
-            <optgroup label="Australian">
-              <option value="aura-2-hyperion-en">Australian Male — Hyperion (mature)</option>
-              <option value="aura-2-theia-en">Australian Female — Theia (mature)</option>
+            <optgroup label="Irish">
+              <option value="aura-angus-en">Irish Male — Angus</option>
             </optgroup>
-            <optgroup label="American">
+            <optgroup label="American (Aura-2 — best audio fidelity)">
               <option value="aura-2-arcas-en">American Male — Arcas (professional)</option>
               <option value="aura-2-orion-en">American Male — Orion (confident)</option>
               <option value="aura-2-zeus-en">American Male — Zeus (deep)</option>
+              <option value="aura-2-draco-en">American Male — Draco (deep)</option>
               <option value="aura-2-thalia-en">American Female — Thalia (warm)</option>
               <option value="aura-2-helena-en">American Female — Helena (formal)</option>
+              <option value="aura-2-pandora-en">American Female — Pandora (soft)</option>
             </optgroup>
           </select>
           <p class="help" style="margin-top:8px;">
             Saved per-device (localStorage). Takes effect next voice mode start.
-            Some voices may not exist on your Deepgram plan tier — if you pick
-            one and voice fails, switch back to Helios.
+            British voices use the Aura-1 model — slightly lower fidelity than
+            Aura-2 but the only ones with a real UK accent. Aura-2 voices are
+            crisper but read American regardless of name. (My earlier
+            "British" Aura-2 list was wrong — Deepgram's Aura-2 catalogue is
+            currently US-only despite the Greek/Roman naming.)
           </p>
         </div>
         <div class="settings-group">
@@ -1642,7 +1645,7 @@ document.getElementById('logout').addEventListener('click', () => {
 // opening the Aura WS — takes precedence over /api/voice/config which is
 // only consulted as a fallback.
 const VOICE_KEY = 'sentrial.voice';
-const VOICE_DEFAULT = 'aura-2-helios-en';   // British male, mature — "M" energy
+const VOICE_DEFAULT = 'aura-helios-en';   // Aura-1 UK male — confirmed British accent
 
 (function setupVoiceSelector() {
   const sel = document.getElementById('voice-select');
@@ -3821,8 +3824,11 @@ pushBtn.addEventListener('click', async () => {
     // Ensure engine is primed (no-op if already done).
     primeTTS();
     const u = new SpeechSynthesisUtterance(cleaned);
-    u.rate = 1.14;
-    u.pitch = 1.0;
+    // Natural rate (was 1.14 — that combined with system voice produced
+    // the "chipmunk Siri" experience when Aura fell through). Slightly
+    // lowered pitch to compensate for system voices typically reading high.
+    u.rate = 1.0;
+    u.pitch = 0.9;
     u.volume = 1.0;
     if (_cachedVoice) u.voice = _cachedVoice;
     else _refreshVoice();
@@ -3845,7 +3851,7 @@ pushBtn.addEventListener('click', async () => {
   // so voice never goes silent — quality dips to the system voice only in
   // that degraded case.
   let _auraKey = null;
-  let _auraVoice = 'aura-2-helios-en';   // British male, mature — "M" energy
+  let _auraVoice = 'aura-helios-en';   // Aura-1 helios IS UK male; aura-2-helios-en doesn't exist
   let _auraAudio = null;
   let _auraCtx = null;
   let _auraRaf = 0;

@@ -144,10 +144,13 @@ def build_app(
         """Voice settings the PWA reads at voice-mode start. Override the
         Aura voice via the `sentrial_voice` keychain entry; default is a
         deeper, more butler-toned voice rather than Orion's snappier read."""
-        # Default: British male, mature — MI6/"M" energy. Client-side
-        # localStorage override (sentrial.voice) takes precedence over this;
-        # this is just the fallback when fresh devices have no local pref.
-        voice = kc.get("sentrial_voice") or "aura-2-helios-en"
+        # Default: Aura-1 helios — confirmed UK male, "M"/MI6 energy.
+        # NB: aura-2-helios-en (the Aura-2 namespace) doesn't exist — Deepgram
+        # returns 400 — and Aura-2's catalogue is currently US-only despite
+        # the Greek/Roman naming. Aura-1 is where the real British accent
+        # lives. Client-side localStorage override takes precedence; this
+        # is just the fresh-device fallback.
+        voice = kc.get("sentrial_voice") or "aura-helios-en"
         return {"voice": voice}
 
     @api.get("/api/voice/greeting", dependencies=[Depends(require_auth)])
