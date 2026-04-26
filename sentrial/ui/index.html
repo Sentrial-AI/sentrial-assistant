@@ -2780,17 +2780,102 @@ pushBtn.addEventListener('click', async () => {
     const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
     const source = ctx.createMediaStreamSource(stream);
 
+    // Load any prior calibration the user has built up across sessions.
+    // Each session refines this further (slow EMA on noise floor + voice
+    // level). Persisted so the FIRST utterance of a fresh session is
+    // already gated correctly instead of needing a re-learn.
+    let _voiceCalib = { noiseFloor: 0.005, voiceLevel: 0.05 };
+    try {
+      const saved = JSON.parse(localStorage.getItem('sentrial.voiceCalib') || 'null');
+      if (saved && typeof saved.noiseFloor === 'number' && typeof saved.voiceLevel === 'number') {
+        _voiceCalib = saved;
+      }
+    } catch {}
+
+    // PCMEmitter with an adaptive noise gate.
+    //
+    // Two slow-moving EMAs track the user's environment:
+    //   noiseFloor — running average of FRAME RMS during quiet periods
+    //   voiceLevel — running average of FRAME RMS during loud periods
+    // The gate opens when the current frame RMS is closer (in log space)
+    // to voiceLevel than to noiseFloor — i.e. it's "more like speech than
+    // like silence". A short hangover keeps the gate open across the
+    // sub-frame troughs in normal speech (gaps between syllables) so we
+    // don't chop words.
+    //
+    // Browser-level noiseSuppression (already on via getUserMedia) handles
+    // stationary noise (fans, hum) cleanly. This gate adds:
+    //   - cuts distant TVs / other people talking (low RMS at our mic)
+    //   - cuts keyboard typing bursts
+    //   - gets MORE accurate over time as the EMAs converge to the user's
+    //     specific voice level + room noise floor
+    //
+    // Calibration is exported back to the main thread every ~2s and saved
+    // to localStorage so next session starts pre-tuned.
     const workletSrc = `
       class PCMEmitter extends AudioWorkletProcessor {
+        constructor(options) {
+          super();
+          const init = (options && options.processorOptions) || {};
+          this.noiseFloor = init.noiseFloor || 0.005;
+          this.voiceLevel = init.voiceLevel || 0.05;
+          this.openHangover = 0;       // frames remaining to keep gate open
+          this.frameCount = 0;
+          this.lastReport = 0;
+        }
         process(inputs) {
           const ch = inputs[0] && inputs[0][0];
           if (!ch) return true;
-          const pcm = new Int16Array(ch.length);
-          for (let i = 0; i < ch.length; i++) {
-            const s = Math.max(-1, Math.min(1, ch[i]));
-            pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+          this.frameCount++;
+
+          // Compute frame RMS
+          let sum = 0;
+          for (let i = 0; i < ch.length; i++) sum += ch[i] * ch[i];
+          const rms = Math.sqrt(sum / ch.length);
+
+          // Decide whether this frame is voice or noise.
+          // Use log-space midpoint between current noiseFloor and voiceLevel.
+          const midpoint = Math.sqrt(Math.max(this.noiseFloor, 1e-6)
+                                   * Math.max(this.voiceLevel, 1e-6));
+          // Lower bound: never gate below 0.003 RMS (true silence).
+          const threshold = Math.max(midpoint, this.noiseFloor * 1.8, 0.003);
+          const isVoice = rms > threshold;
+
+          // Update EMAs only with appropriate frames so the two means stay
+          // separated. Slow alphas — 0.001 means "remember last ~1000 frames"
+          // (~10s at 100 frames/s).
+          if (isVoice) {
+            this.voiceLevel = this.voiceLevel * 0.999 + rms * 0.001;
+            this.openHangover = 12;   // ~120ms hangover at 10ms frames
+          } else {
+            this.noiseFloor = this.noiseFloor * 0.998 + rms * 0.002;
+            if (this.openHangover > 0) this.openHangover--;
           }
+
+          // Gate: pass-through during voice or hangover, silence otherwise.
+          // We MUST still post a buffer to the main thread (Deepgram expects
+          // a steady stream of samples to maintain its endpointing logic);
+          // we just zero the samples when gated.
+          const gateOpen = isVoice || this.openHangover > 0;
+          const pcm = new Int16Array(ch.length);
+          if (gateOpen) {
+            for (let i = 0; i < ch.length; i++) {
+              const s = Math.max(-1, Math.min(1, ch[i]));
+              pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+            }
+          }
+          // else: leave pcm as zeros — Deepgram interprets this as silence,
+          // its VAD/endpointing handles it cleanly.
+
           this.port.postMessage(pcm.buffer, [pcm.buffer]);
+
+          // Report calibration every ~2s so main thread can persist it.
+          if (this.frameCount - this.lastReport > 200) {
+            this.port.postMessage({ type: 'calib',
+                                    noiseFloor: this.noiseFloor,
+                                    voiceLevel: this.voiceLevel });
+            this.lastReport = this.frameCount;
+          }
           return true;
         }
       }
@@ -2800,7 +2885,14 @@ pushBtn.addEventListener('click', async () => {
     try {
       const blobURL = URL.createObjectURL(new Blob([workletSrc], { type: 'application/javascript' }));
       await ctx.audioWorklet.addModule(blobURL);
-      node = new AudioWorkletNode(ctx, 'pcm-emitter');
+      // Seed the worklet with previously-learned calibration so the gate
+      // is already tuned to this user's environment from frame 0.
+      node = new AudioWorkletNode(ctx, 'pcm-emitter', {
+        processorOptions: {
+          noiseFloor: _voiceCalib.noiseFloor,
+          voiceLevel: _voiceCalib.voiceLevel,
+        },
+      });
     } catch (e) {
       stream.getTracks().forEach(t => t.stop());
       try { ws.close(); } catch {}
@@ -2809,8 +2901,18 @@ pushBtn.addEventListener('click', async () => {
       return;
     }
     node.port.onmessage = (ev) => {
+      // The worklet sends two kinds of messages:
+      //   ArrayBuffer (PCM) → forward to Deepgram
+      //   {type:'calib', noiseFloor, voiceLevel} → save to localStorage
+      const data = ev.data;
+      if (data && data.type === 'calib') {
+        _voiceCalib.noiseFloor = data.noiseFloor;
+        _voiceCalib.voiceLevel = data.voiceLevel;
+        try { localStorage.setItem('sentrial.voiceCalib', JSON.stringify(_voiceCalib)); } catch {}
+        return;
+      }
       if (ws.readyState === WebSocket.OPEN) {
-        try { ws.send(ev.data); } catch {}
+        try { ws.send(data); } catch {}
       }
     };
     // Connect source → worklet. We do NOT connect node → destination (would
@@ -2961,18 +3063,22 @@ pushBtn.addEventListener('click', async () => {
 
       const src = this.ctx.createBufferSource();
       src.buffer = buf;
-      // Faster delivery — closer to a Jarvis/butler clip. 1.15 is the
-      // sweet spot before pitch starts going chipmunky. Pitched ~slightly
-      // higher but the voice itself (we picked a deeper Aura voice) keeps
-      // it grounded.
-      src.playbackRate.value = 1.15;
+      // Pitch settings:
+      //   playbackRate = 1.0 — natural delivery speed (no chipmunk effect).
+      //   detune = -150 cents — shift pitch DOWN ~1.5 semitones. AudioBuffer
+      //   sources don't preserve pitch when speed changes, so the prior
+      //   1.15 was making the voice ~165 cents higher than baseline. Now
+      //   the voice reads lower than the natural arcas baseline — closer
+      //   to the deeper "Sir" register Liam wanted.
+      src.playbackRate.value = 1.0;
+      src.detune.value = -150;
       src.connect(this.ctx.destination);
 
       const now = this.ctx.currentTime;
       const start = Math.max(now, this.nextStart);
       try { src.start(start); } catch (e) { return; }
-      // Adjusted duration for playbackRate so chunks chain seamlessly.
-      this.nextStart = start + (buf.duration / 1.15);
+      // Duration is the buffer's intrinsic duration since playbackRate=1.
+      this.nextStart = start + buf.duration;
       this.sources.push(src);
       src.onended = () => {
         this.sources = this.sources.filter((s) => s !== src);
@@ -3245,7 +3351,10 @@ pushBtn.addEventListener('click', async () => {
 
     const url = URL.createObjectURL(blob);
     const audio = new Audio(url);
-    audio.playbackRate = 1.15;   // closer to a Jarvis/butler clip; matches WS path
+    // Natural speed; preservesPitch ensures any user-set rate doesn't pitch-shift.
+    // Lower-register read comes from the arcas voice itself, not from rate manipulation.
+    audio.playbackRate = 1.0;
+    try { audio.preservesPitch = true; } catch {}
 
     let mediaSrc = null;
     let analyser = null;
