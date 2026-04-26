@@ -81,11 +81,23 @@ def load() -> dict:
     return data
 
 
+_SUMMARY_CACHE: str | None = None
+_SUMMARY_CACHE_AT: float = 0.0
+_SUMMARY_CACHE_TTL_S: float = 30.0
+
+
+def _invalidate_summary_cache() -> None:
+    global _SUMMARY_CACHE, _SUMMARY_CACHE_AT
+    _SUMMARY_CACHE = None
+    _SUMMARY_CACHE_AT = 0.0
+
+
 def save(profile: dict) -> None:
     p = _ensure_exists()
     tmp = p.with_suffix(".yaml.tmp")
     tmp.write_text(yaml.safe_dump(profile, sort_keys=False, allow_unicode=True))
     tmp.replace(p)
+    _invalidate_summary_cache()
 
 
 def _merge_missing(target: dict, base: dict) -> None:
@@ -185,7 +197,18 @@ def summary_for_prompt() -> str:
     """A compact identity block for the system prompt. Hard-capped at
     MAX_PROMPT_CHARS so it never blows up token budget. Composition order is
     deliberate: identity → traits → values → recent growth → recent memory.
-    Recent items dominate so personality reflects current Sentrial."""
+    Recent items dominate so personality reflects current Sentrial.
+
+    Cached in-process for 30s — the agent fires this on every turn and the
+    YAML parse + render adds 5-10ms per call. add_memory/add_growth/etc.
+    invalidate the cache via save() so updates show up immediately.
+    """
+    import time as _time
+    global _SUMMARY_CACHE, _SUMMARY_CACHE_AT
+    now = _time.monotonic()
+    if _SUMMARY_CACHE is not None and (now - _SUMMARY_CACHE_AT) < _SUMMARY_CACHE_TTL_S:
+        return _SUMMARY_CACHE
+
     try:
         p = load()
     except Exception as e:  # noqa: BLE001
@@ -244,4 +267,6 @@ def summary_for_prompt() -> str:
     body = "\n".join(lines).strip()
     if len(body) > MAX_PROMPT_CHARS:
         body = body[:MAX_PROMPT_CHARS] + "\n…[truncated]"
+    _SUMMARY_CACHE = body
+    _SUMMARY_CACHE_AT = now
     return body

@@ -87,18 +87,28 @@ class Agent:
         Mirrors turn()'s memory + distill + self-profile bookkeeping at end.
         """
         conv_id = conversation_id or uuid.uuid4().hex[:12]
+        is_voice = channel == "voice"
         try:
-            retrieved = self._retrieve_context(user_message)
-            legacy = self._build_memory_preamble()
+            # Run the four pre-LLM IO operations concurrently. Each one is
+            # 10-100ms of disk/SQLite work; serial they add up to 100-400ms
+            # of dead time before the Anthropic call even starts. Voice mode
+            # uses the lite retrieval path which skips lessons/playbooks/KG
+            # for another ~50-150ms saved.
+            retrieved, legacy, prev_assistant, prior_turns = await asyncio.gather(
+                asyncio.to_thread(self._retrieve_context, user_message, is_voice),
+                asyncio.to_thread(self._build_memory_preamble),
+                asyncio.to_thread(self._prev_assistant_text, conv_id),
+                asyncio.to_thread(self._load_prior_turns, conv_id, 20),
+            )
             composed = (retrieved + legacy + user_message) if (retrieved or legacy) else user_message
 
-            prev_assistant = self._prev_assistant_text(conv_id)
-            prior_turns = self._load_prior_turns(conv_id, limit=20)
-
             messages: list[dict] = prior_turns + [{"role": "user", "content": composed}]
-            memory.log_turn(conv_id, channel, {"role": "user", "content": user_message})
+            # log_turn is a write; fire and forget on the executor so we
+            # don't block the LLM call on SQLite.
+            asyncio.create_task(asyncio.to_thread(
+                memory.log_turn, conv_id, channel, {"role": "user", "content": user_message}
+            ))
 
-            is_voice = channel == "voice"
             model = VOICE_MODEL if is_voice else self.model
             max_tokens = VOICE_MAX_TOKENS if is_voice else DEFAULT_MAX_TOKENS
             system = self.system_prompt
@@ -218,31 +228,31 @@ class Agent:
     ) -> str:
         """Run one conversational turn. Returns the assistant's final text reply."""
         conv_id = conversation_id or uuid.uuid4().hex[:12]
+        is_voice = channel == "voice"
 
-        # Pre-turn retrieval — learned user profile, KG entity cards for names
-        # mentioned in the message, matching task playbook, top relevant
-        # lessons. Each component is a no-op on a fresh install.
-        retrieved = self._retrieve_context(user_message)
-        legacy = self._build_memory_preamble()
+        # Run the four pre-LLM IO operations concurrently — same parallelization
+        # as turn_stream. Voice channel uses the lite retrieval path (skips
+        # lessons/playbooks/KG since live_context already carries actionable
+        # data). Chat keeps full retrieval for richer context.
+        retrieved, legacy, prev_assistant, prior_turns = await asyncio.gather(
+            asyncio.to_thread(self._retrieve_context, user_message, is_voice),
+            asyncio.to_thread(self._build_memory_preamble),
+            asyncio.to_thread(self._prev_assistant_text, conv_id),
+            asyncio.to_thread(self._load_prior_turns, conv_id, 20),
+        )
         composed = (retrieved + legacy + user_message) if (retrieved or legacy) else user_message
-
-        # Pull the prior assistant reply for distillation's correction-detection.
-        prev_assistant = self._prev_assistant_text(conv_id)
-
-        # Load prior turns of this conversation so the LLM has continuity. Without
-        # this, every voice/chat turn started from a blank slate — the model
-        # had no idea what was just said. Capped at the last 20 turns to keep
-        # context cost bounded; voice replies are short so this is plenty.
-        prior_turns = self._load_prior_turns(conv_id, limit=20)
         messages: list[dict] = prior_turns + [{"role": "user", "content": composed}]
-        memory.log_turn(conv_id, channel, {"role": "user", "content": user_message})
+        # log_turn write fires off the critical path.
+        asyncio.create_task(asyncio.to_thread(
+            memory.log_turn, conv_id, channel, {"role": "user", "content": user_message}
+        ))
 
         # Per-channel model + token budget. Voice routes to Haiku 4.5 with
         # a tight max_tokens so replies stay short and the time-to-last-token
         # is ~1-3s vs. Opus's 8-30s. Pre-turn retrieval already injects
         # schedule/calendar/profile/lessons so Haiku has the context it
-        # needs for most voice questions.
-        is_voice = channel == "voice"
+        # needs for most voice questions. is_voice was determined at the top
+        # of the function for the parallelized retrieval gather.
         model = VOICE_MODEL if is_voice else self.model
         max_tokens = VOICE_MAX_TOKENS if is_voice else DEFAULT_MAX_TOKENS
         system = self.system_prompt
@@ -341,12 +351,16 @@ class Agent:
         log.warning(f"hit MAX_TOOL_ITERATIONS={MAX_TOOL_ITERATIONS}")
         return "[sentrial] hit tool-iteration limit — stopping"
 
-    def _retrieve_context(self, user_message: str) -> str:
+    def _retrieve_context(self, user_message: str, lite: bool = False) -> str:
         """Build the pre-turn context block. Fails closed — any error in the
-        evolution layer returns empty rather than blocking the turn."""
+        evolution layer returns empty rather than blocking the turn.
+
+        lite=True skips lessons/playbooks/KG. Used for voice channels where
+        live_context already carries the actionable data and we want every
+        millisecond of pre-LLM latency back."""
         try:
             from sentrial.evolution import retrieval
-            ctx = retrieval.build(user_message)
+            ctx = retrieval.build_lite(user_message) if lite else retrieval.build(user_message)
             return ctx.as_preamble()
         except Exception as e:  # noqa: BLE001
             log.warning("retrieval failed (ignored): %s", e)

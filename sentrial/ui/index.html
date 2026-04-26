@@ -2603,7 +2603,16 @@ pushBtn.addEventListener('click', async () => {
       interim_results: 'true',
       punctuate: 'true',
       smart_format: 'true',
-      endpointing: '300',
+      // 150ms of silence to call utterance done — was 300ms, halved because
+      // the user's biggest remaining latency complaint is the dead air
+      // BEFORE Sentrial responds. Lower than ~120 starts cutting off natural
+      // mid-sentence pauses (esp. the user thinking what to say next).
+      endpointing: '150',
+      // Deepgram also has utterance_end_ms — if the model thinks an utterance
+      // ended but there are still some interims, it sends UtteranceEnd this
+      // many ms later. Tightening to 800 (default 1000) so a brief restart
+      // doesn't cost an extra 200ms.
+      utterance_end_ms: '800',
     });
     // Deepgram lets us auth via Sec-WebSocket-Protocol because browsers can't
     // set the Authorization header. Subprotocol form: ["token", "<API_KEY>"].

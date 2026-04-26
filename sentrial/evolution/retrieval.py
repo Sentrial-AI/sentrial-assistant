@@ -200,6 +200,41 @@ def _build_live_context() -> str:
     return f"[live context]\n{header}\n\n{body}"
 
 
+def build_lite(_user_message: str) -> RetrievedContext:
+    """Voice-mode retrieval. Skips lessons, playbooks, and KG card lookups —
+    those are valuable for chat but add ~50-150ms of pre-LLM latency and
+    100-400 tokens of input that voice doesn't actually need (live_context
+    already carries the actionable data, and voice replies are too short to
+    benefit from playbook scaffolding).
+
+    Keeps: profile summary (terseness preference, focus, etc.) + live context.
+    Both are basically free — profile is in-memory cached, live context is
+    pre-fetched. Net effect: voice turns get to the LLM call ~100-300ms
+    sooner.
+
+    The `_user_message` arg is kept for signature parity with build() so the
+    caller can swap implementations without changing the call site."""
+    try:
+        prof = profile.summary_for_agent()
+    except Exception as e:  # noqa: BLE001
+        log.warning("profile summary failed: %s", e)
+        prof = ""
+    try:
+        live = _build_live_context()
+    except Exception as e:  # noqa: BLE001
+        log.warning("live context build failed: %s", e)
+        live = ""
+    return RetrievedContext(
+        profile_summary=prof,
+        entity_cards="",
+        playbook="",
+        lessons_block="",
+        playbook_slug=None,
+        mentioned_entity_ids=[],
+        live_context=live,
+    )
+
+
 def build(user_message: str, active_tags: list[str] | None = None) -> RetrievedContext:
     # Profile.
     try:

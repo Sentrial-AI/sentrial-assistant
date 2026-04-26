@@ -79,6 +79,7 @@ def load() -> dict:
 def save(profile: dict) -> None:
     p = _ensure_exists()
     p.write_text(yaml.safe_dump(profile, sort_keys=False, allow_unicode=True))
+    _invalidate_summary_cache()
 
 
 def _merge_missing(dst: dict, src: dict) -> None:
@@ -218,12 +219,34 @@ def _ensure_path(profile: dict, path: str) -> None:
 
 # ---- agent-facing compact summary ----
 
+_SUMMARY_CACHE: str | None = None
+_SUMMARY_CACHE_AT: float = 0.0
+_SUMMARY_CACHE_TTL_S: float = 30.0
+
+
+def _invalidate_summary_cache() -> None:
+    """Called by save() so the next summary read picks up profile writes."""
+    global _SUMMARY_CACHE, _SUMMARY_CACHE_AT
+    _SUMMARY_CACHE = None
+    _SUMMARY_CACHE_AT = 0.0
+
+
 def summary_for_agent() -> str:
     """
     A compact paragraph the agent can read at turn-start. Only fields that are
     trusted (confidence >= MIN_TRUSTED_CONFIDENCE) appear. Returns "" if the
     profile is effectively empty.
+
+    Cached in-process for 30s — voice mode fires this on every turn and the
+    YAML parse + iteration adds 5-15ms each call. Writes via save() invalidate
+    the cache so updates show up immediately.
     """
+    import time as _time
+    global _SUMMARY_CACHE, _SUMMARY_CACHE_AT
+    now = _time.monotonic()
+    if _SUMMARY_CACHE is not None and (now - _SUMMARY_CACHE_AT) < _SUMMARY_CACHE_TTL_S:
+        return _SUMMARY_CACHE
+
     profile = load()
     lines: list[str] = []
 
@@ -252,7 +275,10 @@ def summary_for_agent() -> str:
     if know.get("strong_in"):
         lines.append("strong in: " + ", ".join(know["strong_in"][:10]))
 
-    return "\n".join(lines)
+    out = "\n".join(lines)
+    _SUMMARY_CACHE = out
+    _SUMMARY_CACHE_AT = now
+    return out
 
 
 # ---- utilities used by reset + integrity ----
