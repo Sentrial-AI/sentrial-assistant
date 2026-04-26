@@ -106,19 +106,33 @@ class Agent:
                 log.warning("self_profile preamble failed (ignored): %s", e)
 
             if is_voice:
-                # The "narrate before tool" line is what enables sub-1s perceived
-                # latency: when the model decides to use a tool, it emits a short
-                # spoken acknowledgement first, the UI starts TTS immediately, and
-                # the tool runs while the user hears that filler sentence.
+                # The narrate-before-tool rule is what enables perceived sub-1s
+                # latency: model emits a short spoken acknowledgement first, the
+                # UI starts TTS immediately, the tool runs while the user hears
+                # that sentence. Repeated for EACH tool call (including ones
+                # after another tool) so the user never sits in silence between
+                # tool roundtrips. Parallel tool calls when independent because
+                # tool serialization is the dominant latency in chained ops.
                 system = (
                     system
                     + "\n\n[voice-turn mode] Your reply will be spoken aloud. "
-                    "Keep it to 1-2 short sentences. No bullet lists. No markdown "
-                    "formatting. Be direct and conversational. "
-                    "If you need to call a tool that may take a moment, FIRST emit "
-                    "one short sentence narrating what you're about to do "
-                    "(e.g. 'Let me check the calendar.'), THEN make the tool call. "
-                    "This keeps the user from waiting in silence."
+                    "Keep it to 1-2 short sentences. No bullet lists. No markdown. "
+                    "Be direct and conversational.\n\n"
+                    "Tool-call rules (these matter — silence between tool calls is "
+                    "the #1 thing that makes voice mode feel slow):\n"
+                    "1. Before EVERY tool call — including ones after another tool "
+                    "completed — emit ONE short narration sentence first, then make "
+                    "the tool call. Examples: 'Let me pull up your calendar.', "
+                    "'Got it. Removing that one now.', 'One sec, looking it up.'\n"
+                    "2. After a tool result, give the answer in ≤1 sentence. Don't "
+                    "summarize what you did — just the result.\n"
+                    "3. When multiple tool calls are independent (e.g. checking "
+                    "calendar AND email), make them in ONE turn as parallel tool "
+                    "calls — do NOT chain them across turns.\n"
+                    "4. Avoid clarifying questions for voice. Pick the most likely "
+                    "interpretation and act; the user can correct you in 2 seconds.\n"
+                    "5. NEVER say 'I'll get back to you' or 'let me think about it' — "
+                    "either answer now or call a tool now."
                 )
 
             cached_system = [
@@ -234,8 +248,15 @@ class Agent:
             system = (
                 system
                 + "\n\n[voice-turn mode] Your reply will be spoken aloud. "
-                "Keep it to 1-2 short sentences. No bullet lists. No markdown "
-                "formatting. Be direct and conversational."
+                "Keep it to 1-2 short sentences. No bullet lists. No markdown. "
+                "Be direct and conversational.\n\n"
+                "Tool-call rules:\n"
+                "1. Before EVERY tool call — including ones after another tool "
+                "completed — emit ONE short narration sentence first.\n"
+                "2. After a tool result, give the answer in ≤1 sentence.\n"
+                "3. Make independent tool calls in PARALLEL within one turn.\n"
+                "4. Don't ask clarifying questions in voice — pick the most "
+                "likely interpretation and act."
             )
 
         # Cache the system prompt (which is large and stable across turns) so
