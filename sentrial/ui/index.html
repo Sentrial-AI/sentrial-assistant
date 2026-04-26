@@ -483,6 +483,30 @@
     letter-spacing: 0.04em; text-transform: uppercase;
     color: var(--text-3); margin: 0 0 10px;
   }
+  /* Native <select> styled to match input + button surfaces. Custom chevron
+     so we don't get the OS's default control look that clashes with the
+     rest of the app. */
+  .settings-group select.styled {
+    appearance: none; -webkit-appearance: none;
+    width: 100%; max-width: 380px;
+    padding: 11px 36px 11px 14px;
+    font: inherit; font-size: 14px;
+    color: var(--text); background-color: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    transition: border-color 0.15s ease, background 0.15s ease;
+    cursor: pointer;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'><path d='M1 1l5 5 5-5' fill='none' stroke='%239ca3af' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+    background-repeat: no-repeat;
+    background-position: right 14px center;
+  }
+  .settings-group select.styled:hover { border-color: var(--border-strong); background-color: var(--elevated); }
+  .settings-group select.styled:focus { outline: none; border-color: var(--accent); }
+  .settings-group select.styled option { color: var(--text); background: var(--surface); }
+  .settings-group select.styled optgroup {
+    color: var(--text-3); font-style: normal; font-weight: 500;
+    letter-spacing: 0.04em; text-transform: uppercase; font-size: 11px;
+  }
   .mcp-row {
     display: flex; justify-content: space-between; align-items: center;
     padding: 12px 14px;
@@ -1309,22 +1333,33 @@
             Aura voice for Sentrial's spoken replies. British presets give the
             MI6-style register; Australian/American available too.
           </label>
-          <select id="voice-select" class="select-styled" style="width:100%; max-width:360px;">
-            <optgroup label="British (Aura-1 — confirmed UK accent)">
-              <option value="aura-helios-en">British Male — Helios (transparent, 'M' energy) ★ default</option>
+          <select id="voice-select" class="styled">
+            <optgroup label="British (Aura-1 — UK accent)">
+              <option value="aura-helios-en">British Male — Helios (transparent)</option>
               <option value="aura-athena-en">British Female — Athena (mature, intelligent)</option>
             </optgroup>
             <optgroup label="Irish">
               <option value="aura-angus-en">Irish Male — Angus</option>
             </optgroup>
-            <optgroup label="American (Aura-2 — best audio fidelity)">
-              <option value="aura-2-arcas-en">American Male — Arcas (professional)</option>
-              <option value="aura-2-orion-en">American Male — Orion (confident)</option>
-              <option value="aura-2-zeus-en">American Male — Zeus (deep)</option>
-              <option value="aura-2-draco-en">American Male — Draco (deep)</option>
-              <option value="aura-2-thalia-en">American Female — Thalia (warm)</option>
-              <option value="aura-2-helena-en">American Female — Helena (formal)</option>
-              <option value="aura-2-pandora-en">American Female — Pandora (soft)</option>
+            <optgroup label="American (Aura-1)">
+              <option value="aura-perseus-en">American Male — Perseus (natural)</option>
+              <option value="aura-arcas-en">American Male — Arcas (professional)</option>
+              <option value="aura-orpheus-en">American Male — Orpheus (calm)</option>
+              <option value="aura-orion-en">American Male — Orion (confident)</option>
+              <option value="aura-zeus-en">American Male — Zeus (deep)</option>
+              <option value="aura-asteria-en">American Female — Asteria (warm)</option>
+              <option value="aura-luna-en">American Female — Luna (soft)</option>
+              <option value="aura-stella-en">American Female — Stella (friendly)</option>
+              <option value="aura-hera-en">American Female — Hera (mature)</option>
+            </optgroup>
+            <optgroup label="American (Aura-2 — crisper audio, US-only)">
+              <option value="aura-2-arcas-en">American Male — Arcas (Aura-2)</option>
+              <option value="aura-2-orion-en">American Male — Orion (Aura-2)</option>
+              <option value="aura-2-draco-en">American Male — Draco (deep, Aura-2)</option>
+              <option value="aura-2-zeus-en">American Male — Zeus (deep, Aura-2)</option>
+              <option value="aura-2-thalia-en">American Female — Thalia (warm, Aura-2)</option>
+              <option value="aura-2-helena-en">American Female — Helena (formal, Aura-2)</option>
+              <option value="aura-2-pandora-en">American Female — Pandora (soft, Aura-2)</option>
             </optgroup>
           </select>
           <p class="help" style="margin-top:8px;">
@@ -1662,8 +1697,16 @@ const VOICE_DEFAULT = 'aura-helios-en';   // Aura-1 UK male — confirmed Britis
     try {
       localStorage.setItem(VOICE_KEY, sel.value);
     } catch {}
-    // Reset any open Aura WS so the next voice turn opens with the new voice.
-    try { window._sentrialCloseAuraWS && window._sentrialCloseAuraWS(); } catch {}
+    // Apply LIVE: updates the in-memory _auraVoice (used by both WS and
+    // REST fallback paths), closes any open WS so the next voice turn
+    // rebuilds with the new voice, and cancels any in-flight playback so
+    // the swap takes effect on the very next reply, not the one after.
+    if (typeof window._sentrialSetVoice === 'function') {
+      window._sentrialSetVoice(sel.value);
+    } else if (typeof window._sentrialCloseAuraWS === 'function') {
+      // Fallback if setVoice isn't exposed (older voice IIFE somehow loaded)
+      window._sentrialCloseAuraWS();
+    }
   });
 })();
 
@@ -3266,6 +3309,18 @@ pushBtn.addEventListener('click', async () => {
 
   // Tear down the WS when voice mode exits — frees the connection and
   // stops the server from billing for an idle session.
+  // Live voice swap: update _auraVoice (used by both WS + REST paths),
+  // close any open WS so the next voice turn rebuilds with the new voice,
+  // and stop any in-flight TTS so the user hears the new voice immediately
+  // on the next reply rather than the rest of the previous one.
+  function _setVoice(v) {
+    if (!v || typeof v !== 'string') return;
+    _auraVoice = v;
+    if (_wsAura) { try { _wsAura.close(); } catch {} _wsAura = null; }
+    try { _ttsCancel(); } catch {}
+  }
+  window._sentrialSetVoice = _setVoice;
+
   function _wsAuraClose() {
     if (_wsAura) { try { _wsAura.close(); } catch {} _wsAura = null; }
   }
