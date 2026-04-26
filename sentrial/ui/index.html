@@ -2677,6 +2677,49 @@ pushBtn.addEventListener('click', async () => {
         4008: 'unsupported model',
         4009: 'rate limited',
       })[ev.code] || ('code ' + ev.code);
+      // 1006 with Deepgram is *almost always* protocol-level auth rejection
+      // (the server closed without a clean 4001 frame). For 1006 / auth /
+      // billing-shaped codes, fire /api/voice/test_key — which calls Deepgram
+      // /v1/projects from the server with the same key — to definitively
+      // settle whether the key authenticates. Surface the result inline so
+      // we don't ping-pong on "is it the key?" diagnostics.
+      const suspiciousCodes = [1006, 1008, 4001, 4003, 4008, 4009];
+      if (suspiciousCodes.includes(ev.code)) {
+        (async () => {
+          try {
+            const r = await api('GET', '/api/voice/test_key');
+            const d = await r.json();
+            if (d.ok) {
+              window.sentrialVoiceError(
+                'Deepgram closed: ' + codeName + ' — but key WORKS (test=200, ' +
+                'len=' + (d.key_length||'?') + '). Network or model issue, not key.'
+              );
+            } else if (d.status === 401) {
+              window.sentrialVoiceError(
+                'Deepgram key INVALID (server got 401). The NOVA3_API_KEY env ' +
+                'var on Railway is wrong/expired. Get a fresh key from ' +
+                'console.deepgram.com and update Railway Variables.'
+              );
+            } else if (d.status === 403) {
+              window.sentrialVoiceError(
+                'Deepgram billing/permissions (server got 403). Check ' +
+                'console.deepgram.com → Billing — likely out of credit.'
+              );
+            } else if (d.error) {
+              window.sentrialVoiceError(
+                'Deepgram closed: ' + codeName + '; server-side test errored: ' + d.error
+              );
+            } else {
+              window.sentrialVoiceError(
+                'Deepgram closed: ' + codeName + '; server-side test returned ' + (d.status||'?')
+              );
+            }
+          } catch (e) {
+            window.sentrialVoiceError('Deepgram closed: ' + codeName + ' (test_key fetch failed)');
+          }
+        })();
+        return;
+      }
       window.sentrialVoiceError('Deepgram closed: ' + codeName + (reason ? ' — ' + reason : ''));
     });
 
