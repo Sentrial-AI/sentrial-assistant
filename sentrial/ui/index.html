@@ -1304,6 +1304,36 @@
       <div class="view-header"><h2>Settings</h2></div>
       <div class="settings-body">
         <div class="settings-group">
+          <h3>Voice</h3>
+          <label for="voice-select" class="help" style="display:block; margin-bottom:6px;">
+            Aura voice for Sentrial's spoken replies. British presets give the
+            MI6-style register; Australian/American available too.
+          </label>
+          <select id="voice-select" class="select-styled" style="width:100%; max-width:360px;">
+            <optgroup label="British">
+              <option value="aura-2-helios-en">British Male — Helios (mature, 'M' energy)</option>
+              <option value="aura-2-draco-en">British Male — Draco (deep, authoritative)</option>
+              <option value="aura-2-pandora-en">British Female — Pandora (refined, soft)</option>
+            </optgroup>
+            <optgroup label="Australian">
+              <option value="aura-2-hyperion-en">Australian Male — Hyperion (mature)</option>
+              <option value="aura-2-theia-en">Australian Female — Theia (mature)</option>
+            </optgroup>
+            <optgroup label="American">
+              <option value="aura-2-arcas-en">American Male — Arcas (professional)</option>
+              <option value="aura-2-orion-en">American Male — Orion (confident)</option>
+              <option value="aura-2-zeus-en">American Male — Zeus (deep)</option>
+              <option value="aura-2-thalia-en">American Female — Thalia (warm)</option>
+              <option value="aura-2-helena-en">American Female — Helena (formal)</option>
+            </optgroup>
+          </select>
+          <p class="help" style="margin-top:8px;">
+            Saved per-device (localStorage). Takes effect next voice mode start.
+            Some voices may not exist on your Deepgram plan tier — if you pick
+            one and voice fails, switch back to Helios.
+          </p>
+        </div>
+        <div class="settings-group">
           <h3>Notifications</h3>
           <button class="btn-primary" id="enable-push">Enable push</button>
           <p class="help" id="push-help">Get pinged when autonomous jobs finish.</p>
@@ -1606,6 +1636,33 @@ document.getElementById('logout').addEventListener('click', () => {
   STATE.token = null;
   location.reload();
 });
+
+// ================ Voice selector ================
+// Per-device voice override. Read by the voice IIFE (_wsAuraEnsure) when
+// opening the Aura WS — takes precedence over /api/voice/config which is
+// only consulted as a fallback.
+const VOICE_KEY = 'sentrial.voice';
+const VOICE_DEFAULT = 'aura-2-helios-en';   // British male, mature — "M" energy
+
+(function setupVoiceSelector() {
+  const sel = document.getElementById('voice-select');
+  if (!sel) return;
+  let saved = '';
+  try { saved = localStorage.getItem(VOICE_KEY) || ''; } catch {}
+  const target = saved || VOICE_DEFAULT;
+  // If the saved value isn't in our preset list, the dropdown won't match —
+  // leave it unselected; user can pick from the list.
+  for (const opt of sel.options) {
+    if (opt.value === target) { sel.value = target; break; }
+  }
+  sel.addEventListener('change', () => {
+    try {
+      localStorage.setItem(VOICE_KEY, sel.value);
+    } catch {}
+    // Reset any open Aura WS so the next voice turn opens with the new voice.
+    try { window._sentrialCloseAuraWS && window._sentrialCloseAuraWS(); } catch {}
+  });
+})();
 
 // ================ Tabs ================
 function activateTab(name) {
@@ -3175,15 +3232,25 @@ pushBtn.addEventListener('click', async () => {
       ping.start();
     } catch {}
     if (!_auraCtx) return null;
-    // Read the user's preferred voice from server config (allows swapping
-    // without a rebuild). Falls back to local default if endpoint fails.
-    try {
-      const cfgR = await api('GET', '/api/voice/config');
-      if (cfgR && cfgR.ok) {
-        const cfg = await cfgR.json();
-        if (cfg && cfg.voice) _auraVoice = cfg.voice;
-      }
-    } catch {}
+    // Voice selection waterfall:
+    //   1. localStorage 'sentrial.voice' — set by the Settings dropdown,
+    //      per-device, takes effect immediately on next voice mode start
+    //   2. /api/voice/config (server-side keychain `sentrial_voice`) —
+    //      account-level fallback for fresh devices
+    //   3. _auraVoice baked-in default (British Male — Helios)
+    let chosen = '';
+    try { chosen = localStorage.getItem('sentrial.voice') || ''; } catch {}
+    if (chosen) {
+      _auraVoice = chosen;
+    } else {
+      try {
+        const cfgR = await api('GET', '/api/voice/config');
+        if (cfgR && cfgR.ok) {
+          const cfg = await cfgR.json();
+          if (cfg && cfg.voice) _auraVoice = cfg.voice;
+        }
+      } catch {}
+    }
     const inst = new AuraWS(key, _auraVoice, _auraCtx);
     const ok = await inst.waitOpen(4000);
     if (!ok) {
@@ -3778,7 +3845,7 @@ pushBtn.addEventListener('click', async () => {
   // so voice never goes silent — quality dips to the system voice only in
   // that degraded case.
   let _auraKey = null;
-  let _auraVoice = 'aura-2-orion-en';
+  let _auraVoice = 'aura-2-helios-en';   // British male, mature — "M" energy
   let _auraAudio = null;
   let _auraCtx = null;
   let _auraRaf = 0;

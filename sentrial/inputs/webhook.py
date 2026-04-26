@@ -144,9 +144,10 @@ def build_app(
         """Voice settings the PWA reads at voice-mode start. Override the
         Aura voice via the `sentrial_voice` keychain entry; default is a
         deeper, more butler-toned voice rather than Orion's snappier read."""
-        # Default chosen for "Sir" / Jarvis tonal energy — mature, professional,
-        # lower-register than orion. Easily overridable without a redeploy.
-        voice = kc.get("sentrial_voice") or "aura-2-arcas-en"
+        # Default: British male, mature — MI6/"M" energy. Client-side
+        # localStorage override (sentrial.voice) takes precedence over this;
+        # this is just the fallback when fresh devices have no local pref.
+        voice = kc.get("sentrial_voice") or "aura-2-helios-en"
         return {"voice": voice}
 
     @api.get("/api/voice/greeting", dependencies=[Depends(require_auth)])
