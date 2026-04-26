@@ -356,15 +356,20 @@ def run():
             self._last_pwa_load_at = now
             log.info("menubar loaded PWA → %s", bust_url)
 
-        def _reload_pwa_if_stale(self, min_age_s: float = 30.0):
+        def _reload_pwa_if_stale(self, min_age_s: float = 600.0):
             """Reload the WebView with a fresh cache-bust if the last load
             was more than min_age_s ago. Means: new Railway deploys are
             auto-picked-up the next time the user opens the popover or
-            triggers voice mode after a brief idle. No more "edits not
-            landing" because the WebView cached the page at startup.
+            triggers voice mode after a long idle.
 
-            Throttled so spam-clicking the menubar doesn't reload constantly
-            (each reload is a full page reset — voice/chat state goes away).
+            Throttle was 30s — too aggressive. Each reload is a 1-2s blank
+            window while the WebView re-fetches from Railway (longer when
+            Railway is sluggish), and WKWebView's translucent background
+            makes that window look like an empty popover. 600s (10min)
+            still picks up deploys when you've been away from the popover
+            for a while, but normal back-and-forth doesn't keep blanking
+            the UI. Use the manual "Reload" button in Settings → Voice
+            for an on-demand refresh.
             """
             import time as _t
             now = _t.time()

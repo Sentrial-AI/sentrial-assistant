@@ -1359,12 +1359,15 @@
             </optgroup>
           </select>
           <p class="help" style="margin-top:8px;">
-            Saved per-device (localStorage). Takes effect next voice mode start.
-            British voices use the Aura-1 model — slightly lower fidelity than
-            Aura-2 but the only ones with a real UK accent. Aura-2 voices are
-            crisper but read American regardless of name. (My earlier
-            "British" Aura-2 list was wrong — Deepgram's Aura-2 catalogue is
-            currently US-only despite the Greek/Roman naming.)
+            Saved per-device. Takes effect on the next voice mode start.
+            British voices (Aura-1) have real UK accents; Aura-2 voices are
+            crisper but read American regardless of name.
+          </p>
+          <button class="btn-secondary" id="reload-pwa" style="margin-top:8px;">Reload UI</button>
+          <p class="help" style="margin-top:6px;">
+            Force-fetch the latest UI from Railway. Auto-refresh runs every
+            10 minutes of idle anyway, but use this if you just deployed and
+            want to see changes immediately.
           </p>
         </div>
         <div class="settings-group">
@@ -1704,6 +1707,18 @@ const VOICE_DEFAULT = 'aura-helios-en';   // Aura-1 UK male — confirmed Britis
       window._sentrialCloseAuraWS();
     }
   });
+
+  // On-demand "Reload UI" — forces a fresh fetch from Railway with a new
+  // cache-bust query. Useful right after a deploy when you don't want to
+  // wait for the 10min idle threshold.
+  const reloadBtn = document.getElementById('reload-pwa');
+  if (reloadBtn) {
+    reloadBtn.addEventListener('click', () => {
+      const u = new URL(window.location.href);
+      u.searchParams.set('v', String(Date.now()));
+      window.location.replace(u.toString());
+    });
+  }
 })();
 
 // ================ Tabs ================
