@@ -23,11 +23,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import shlex
 import shutil
-import subprocess
-import uuid
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -140,6 +136,89 @@ async def approve_job(args: dict) -> Any:
     return {"ok": True, "job_id": jid, "status": "approved"}
 
 
+async def start_proposal(args: dict) -> Any:
+    """High-level wrapper around start_background_job for proposals. Voice-
+    friendly: agent fills out brand/format/client/brief from the conversation
+    and gets back an immediate handle to confirm verbally ('Got it,
+    drafting now'). The actual generation runs as a background job.
+
+    Brand defaults to "sentrial" if unspecified. If Liam mentions Pursuit
+    Visuals / video / photo / production, agent should pass brand="pursuit".
+
+    Format defaults to "major" (full proposal). Pass "one_pager" only when
+    Liam explicitly asks for a quick one-pager / short version.
+    """
+    if _runner is None:
+        return {"error": "task runner not registered"}
+
+    brand = (args.get("brand") or "sentrial").lower().strip()
+    format_ = (args.get("format") or "major").lower().strip().replace("-", "_")
+    client = (args.get("client") or "").strip()
+    brief = (args.get("brief") or "").strip()
+    pricing_hint = (args.get("pricing_hint") or "").strip() or None
+    deadline = (args.get("deadline") or "").strip() or None
+    extra_context = (args.get("extra_context") or "").strip() or None
+
+    if not client:
+        return {"error": "client is required — who is the proposal for?"}
+    if not brief:
+        return {"error": "brief is required — even one sentence on what they need"}
+    if brand not in {"pursuit", "sentrial"}:
+        brand = "sentrial"
+    if format_ not in {"one_pager", "major"}:
+        format_ = "major"
+
+    # Auto-build a scope_preview from inputs so voice doesn't have to.
+    fmt_label = "one-pager" if format_ == "one_pager" else "full proposal"
+    brand_label = "Pursuit Visuals" if brand == "pursuit" else "Sentrial"
+    eta = "1-2 min" if format_ == "one_pager" else "2-4 min"
+    scope_preview = (
+        f"{brand_label} {fmt_label} for {client}. "
+        f"ETA {eta}. Will save to deliverables/<id>/proposal.html."
+    )
+
+    params = {
+        "brand": brand,
+        "format": format_,
+        "client": client,
+        "brief": brief,
+    }
+    if pricing_hint:
+        params["pricing_hint"] = pricing_hint
+    if deadline:
+        params["deadline"] = deadline
+    if extra_context:
+        params["extra_context"] = extra_context
+
+    job = _runner.create_job(
+        kind="proposal",
+        request=brief,
+        scope_preview=scope_preview,
+        params=params,
+    )
+    # Auto-approve so voice flow doesn't strand the user waiting for an
+    # explicit /approve roundtrip — Liam already approved verbally by
+    # asking for it. The task_runner will pick it up off the queue.
+    try:
+        await _runner.approve(job.id)
+    except (KeyError, ValueError) as e:
+        log.warning("start_proposal: auto-approve failed (will require manual): %s", e)
+
+    return {
+        "ok": True,
+        "job_id": job.id,
+        "brand": brand,
+        "format": format_,
+        "client": client,
+        "scope_preview": scope_preview,
+        "status": "approved-and-queued",
+        "next_step": (
+            f"Tell Liam: '{brand_label} {fmt_label} for {client} — drafting now, "
+            f"ready in about {eta}.' Then end the turn."
+        ),
+    }
+
+
 # -----------------------------------------------------------------------------
 # Executors (run under task_runner — these are the long-running workers)
 # -----------------------------------------------------------------------------
@@ -204,9 +283,32 @@ async def _run_skill_subprocess(
 
 
 async def execute_proposal(job: Job) -> str:
+    """Run the native proposal generator (no subprocess, no claude CLI).
+    Reads brand/format/client/brief from job.params; falls back to
+    sensible defaults so an under-specified job still produces something.
+    Returns the absolute path to the rendered proposal.html."""
     audit.log("sentrial", "skill_invoke:proposal", 1,
               args={"job_id": job.id}, job_id=job.id)
-    return await _run_skill_subprocess("proposal", job)
+    from sentrial.mcps.proposals.generator import generate, ProposalBrief
+
+    p = job.params or {}
+    brief = ProposalBrief(
+        client=str(p.get("client") or "").strip() or "Prospective Client",
+        brief=str(p.get("brief") or job.request or "").strip()
+              or "(no brief provided — drafting from minimal context)",
+        brand=str(p.get("brand") or "sentrial"),
+        format=str(p.get("format") or "major"),
+        pricing_hint=p.get("pricing_hint"),
+        deadline=p.get("deadline"),
+        extra_context=p.get("extra_context"),
+    )
+    out_dir = DELIVERABLES_DIR / job.id
+    result = await generate(brief, out_dir)
+    log.info(
+        "proposal generated: brand=%s format=%s words=%d → %s",
+        result.brand, result.format, result.word_count, result.html_path,
+    )
+    return str(result.html_path)
 
 
 async def execute_audit(job: Job) -> str:
@@ -309,6 +411,71 @@ TOOLS = [
         },
         impl=approve_job,
         tier=Tier.SEND,
+    ),
+    Tool(
+        name="start_proposal",
+        description=(
+            "Voice-friendly proposal builder. Use this when Liam asks you to "
+            "build / write / draft a proposal for someone. Auto-approved — the "
+            "background job kicks off immediately and the rendered HTML lands "
+            "in deliverables/<job_id>/proposal.html within 1-4 minutes "
+            "(one-pager 1-2 min, major 2-4 min). After calling, tell Liam ETA "
+            "and end the turn — don't make him wait for the file. "
+            "Brand: 'pursuit' if Liam mentioned Pursuit Visuals / video / "
+            "photo / production work; otherwise 'sentrial' (AI agency, default). "
+            "Format: 'one_pager' only when Liam asked for a quick / short / "
+            "one-page version; otherwise 'major' (full pitch)."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "client": {
+                    "type": "string",
+                    "description": "Who the proposal is for — company or person name.",
+                },
+                "brief": {
+                    "type": "string",
+                    "description": (
+                        "What the proposal is about. Verbatim from Liam's "
+                        "transcript or notes is fine; the generator will "
+                        "reorganize. Even one sentence is enough to start."
+                    ),
+                },
+                "brand": {
+                    "type": "string",
+                    "enum": ["pursuit", "sentrial"],
+                    "description": (
+                        "'pursuit' for Pursuit Visuals (dark modern, video/photo). "
+                        "'sentrial' for Sentrial (light modern, AI agency). "
+                        "Default sentrial."
+                    ),
+                },
+                "format": {
+                    "type": "string",
+                    "enum": ["one_pager", "major"],
+                    "description": (
+                        "'one_pager' = ~500-word skim-in-90-seconds proposal. "
+                        "'major' = ~2000-word full pitch with sections + "
+                        "pricing + timeline. Default major."
+                    ),
+                },
+                "pricing_hint": {
+                    "type": "string",
+                    "description": "Optional — pricing direction Liam mentioned (e.g. 'around $5k', 'retainer model').",
+                },
+                "deadline": {
+                    "type": "string",
+                    "description": "Optional — when they need a decision by, or project deadline.",
+                },
+                "extra_context": {
+                    "type": "string",
+                    "description": "Optional — past relationship, tone preference, anything else relevant.",
+                },
+            },
+            "required": ["client", "brief"],
+        },
+        impl=start_proposal,
+        tier=Tier.DRAFT,
     ),
 ]
 
