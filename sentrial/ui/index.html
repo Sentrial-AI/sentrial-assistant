@@ -2761,9 +2761,11 @@ pushBtn.addEventListener('click', async () => {
       interim_results: 'true',
       punctuate: 'true',
       smart_format: 'true',
-      // 150ms of silence to call utterance done. Halved from 300 to cut
-      // dead-air-after-user-stops — the biggest perceived latency.
-      endpointing: '150',
+      // 400ms of silence to call utterance done. Was 150 — too tight, kept
+      // cutting Liam off mid-sentence when he paused to think. 400 is the
+      // sweet spot: long enough to let natural thinking pauses ride, short
+      // enough that the response still feels prompt after a clean stop.
+      endpointing: '400',
       // NB: utterance_end_ms had been set to 800 a few commits ago — that's
       // BELOW Deepgram's documented minimum (1000), so every WS upgrade was
       // rejected with HTTP 400, which the browser masks as the opaque 1006
@@ -2960,7 +2962,13 @@ pushBtn.addEventListener('click', async () => {
           // (~10s at 100 frames/s).
           if (isVoice) {
             this.voiceLevel = this.voiceLevel * 0.999 + rms * 0.001;
-            this.openHangover = 12;   // ~120ms hangover at 10ms frames
+            // 400ms hangover (was 120ms). The previous value was cutting
+            // off mid-sentence pauses — when Liam paused to think, the
+            // gate closed within 120ms, sent zeros to Deepgram, and
+            // Deepgram VAD interpreted that as end-of-utterance. 400ms
+            // lets natural pauses ride. Combined with Deepgram endpointing
+            // 400ms, total tolerance for thinking pauses is ~800ms.
+            this.openHangover = 40;   // ~400ms at 10ms frames
           } else {
             this.noiseFloor = this.noiseFloor * 0.998 + rms * 0.002;
             if (this.openHangover > 0) this.openHangover--;
@@ -3177,22 +3185,31 @@ pushBtn.addEventListener('click', async () => {
 
       const src = this.ctx.createBufferSource();
       src.buffer = buf;
-      // Pitch settings:
-      //   playbackRate = 1.0 — natural delivery speed (no chipmunk effect).
-      //   detune = -150 cents — shift pitch DOWN ~1.5 semitones. AudioBuffer
-      //   sources don't preserve pitch when speed changes, so the prior
-      //   1.15 was making the voice ~165 cents higher than baseline. Now
-      //   the voice reads lower than the natural arcas baseline — closer
-      //   to the deeper "Sir" register Liam wanted.
+      // Pitch lower than baseline — detune is in cents; -150 ≈ -1.5 semitones.
+      // CRITICAL: detune affects effective playback rate as well as pitch.
+      // Per Web Audio spec:  effective_rate = playbackRate × 2^(detune/1200)
+      // With detune=-150 the audio plays at ~91.7% of natural speed, which
+      // means each buffer takes buf.duration / 0.9170 ≈ buf.duration × 1.09
+      // to actually finish. If we schedule the NEXT chunk at (start + buf.duration)
+      // without accounting for this, consecutive chunks overlap by ~9% — that
+      // overlap is exactly the stuttering / clicking / "bad-radio" sound.
       src.playbackRate.value = 1.0;
       src.detune.value = -150;
       src.connect(this.ctx.destination);
 
+      const PB_RATE = 1.0;
+      const DETUNE_CENTS = -150;
+      const effectiveRate = PB_RATE * Math.pow(2, DETUNE_CENTS / 1200);
+      const playbackDuration = buf.duration / effectiveRate;
+
       const now = this.ctx.currentTime;
-      const start = Math.max(now, this.nextStart);
+      // Tiny lookahead (30ms) — avoids scheduling into the past when network
+      // jitter or a main-thread blip nudged nextStart slightly behind real
+      // time. After the first chunk, nextStart drives subsequent chunks
+      // back-to-back at this offset, so latency doesn't compound.
+      const start = Math.max(now + 0.03, this.nextStart);
       try { src.start(start); } catch (e) { return; }
-      // Duration is the buffer's intrinsic duration since playbackRate=1.
-      this.nextStart = start + buf.duration;
+      this.nextStart = start + playbackDuration;
       this.sources.push(src);
       src.onended = () => {
         this.sources = this.sources.filter((s) => s !== src);
