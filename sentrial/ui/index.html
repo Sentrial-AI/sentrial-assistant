@@ -2191,6 +2191,10 @@ pushBtn.addEventListener('click', async () => {
   let currentState = 'idle';
   let mobileRecog = null;
   let mobileMode = false;
+  // Set true when voice mode opens; flipped false on first user transcript
+  // (interim or final) so the greeting auto-cancels if the user starts
+  // talking before it plays.
+  let _greetingPending = false;
 
   // ---- Node-web globe ----
   //
@@ -2569,8 +2573,34 @@ pushBtn.addEventListener('click', async () => {
     // Calendar / Gmail / Reminders and stores results server-side. By the
     // time the user finishes their first sentence (~3-5s), the cache is hot
     // and the agent answers "what's on my plate" from the prompt instead of
-    // chained tool calls. Fire-and-forget — failures are silent.
-    api('POST', '/api/voice/prewarm', {}).catch(() => {});
+    // chained tool calls.
+    //
+    // Chain the greeting AFTER prewarm completes so it can reference real
+    // urgency state ("Sir, two items due today.") instead of guessing.
+    // Cancellable: if the user starts talking before greeting plays, the
+    // first interim transcript flips _greetingPending off and the greeting
+    // is silently dropped.
+    _greetingPending = true;
+    api('POST', '/api/voice/prewarm', {}).then(async () => {
+      if (!_greetingPending || !active) return;
+      try {
+        const r = await api('GET', '/api/voice/greeting');
+        if (!r.ok || !_greetingPending || !active) return;
+        const d = await r.json();
+        const text = (d && d.text || '').trim();
+        if (!text) return;
+        // Wait briefly for the WS to come up if it's still handshaking.
+        for (let i = 0; i < 8; i++) {
+          if (_wsAura && _wsAura.isReady()) break;
+          await new Promise(res => setTimeout(res, 80));
+        }
+        if (!_greetingPending || !active) return;
+        // Use the same TTS pipeline the agent uses, so state-flip + orb
+        // pulse + interrupt all behave identically.
+        _ttsResetForTurn();
+        _streamSpeak(text);
+      } catch {}
+    }).catch(() => {});
 
     let stream;
     try {
@@ -2749,6 +2779,12 @@ pushBtn.addEventListener('click', async () => {
     // Voice Mode is intentionally text-free. We accept interim transcripts
     // from Deepgram but don't render them — the only visual signal during
     // listening is the orb pulse + the state label.
+    // Cancel the startup greeting the instant the user starts talking, so
+    // we don't speak over them.
+    if (_greetingPending) {
+      _greetingPending = false;
+      _ttsCancel();
+    }
     return;
   };
 
@@ -2820,28 +2856,44 @@ pushBtn.addEventListener('click', async () => {
 
       const src = this.ctx.createBufferSource();
       src.buffer = buf;
-      // Slightly snappier delivery — same playbackRate as the HTMLAudioElement
-      // path. Voice still natural, ~5-10% faster perceived.
-      src.playbackRate.value = 1.10;
+      // Faster delivery — closer to a Jarvis/butler clip. 1.15 is the
+      // sweet spot before pitch starts going chipmunky. Pitched ~slightly
+      // higher but the voice itself (we picked a deeper Aura voice) keeps
+      // it grounded.
+      src.playbackRate.value = 1.15;
       src.connect(this.ctx.destination);
 
       const now = this.ctx.currentTime;
       const start = Math.max(now, this.nextStart);
       try { src.start(start); } catch (e) { return; }
       // Adjusted duration for playbackRate so chunks chain seamlessly.
-      this.nextStart = start + (buf.duration / 1.10);
+      this.nextStart = start + (buf.duration / 1.15);
       this.sources.push(src);
       src.onended = () => {
         this.sources = this.sources.filter((s) => s !== src);
       };
 
-      // First-audio callback — schedule it for when audio actually starts
-      // (start time may be in the future if we're queued).
+      // First-audio callback. We ONLY want to flip the orb to "speaking"
+      // when audio is actually outputting — not when we've merely scheduled
+      // it on the AudioContext clock. If the context is suspended (or the
+      // OS audio device hasn't actually attached yet), the schedule advances
+      // but the speaker stays silent. That was the "orange orb, no sound"
+      // bug. Solution: if ctx is running, schedule the flip at audio-clock
+      // start time; if suspended, await resume() then fire immediately.
       if (!this.firstAudioFired) {
         this.firstAudioFired = true;
-        const delayMs = Math.max(0, (start - now) * 1000);
         const cb = this.onFirstAudio;
-        if (cb) setTimeout(cb, delayMs);
+        if (cb) {
+          if (this.ctx.state === 'running') {
+            const delayMs = Math.max(0, (start - now) * 1000);
+            setTimeout(cb, delayMs);
+          } else {
+            // Try to resume; only fire the flip after resume actually succeeded.
+            this.ctx.resume().then(() => {
+              if (this.ctx.state === 'running') cb();
+            }).catch(() => {});
+          }
+        }
       }
 
       // Synthetic pulse from chunk peak amplitude — drives orb breathing.
@@ -2896,13 +2948,31 @@ pushBtn.addEventListener('click', async () => {
     if (_wsAura) { try { _wsAura.close(); } catch {} _wsAura = null; }
     const key = await _loadAuraKey();
     if (!key) return null;
-    // Make sure _auraCtx exists and is unlocked. This is called from the
-    // voice-mode-start gesture chain, so resume() will succeed.
+    // Aggressively unlock the AudioContext. Called from the voice-mode-start
+    // gesture chain (Right-Option press) so resume() will succeed. After
+    // resume, play a SILENT buffer to force WKWebView to actually open the
+    // audio output stream. Without this kickstart, ctx.state can read
+    // 'running' but no audio device is bound, so scheduled buffers play
+    // into the void and the user gets orange-orb-with-silence.
     try {
       if (!_auraCtx) _auraCtx = new (window.AudioContext || window.webkitAudioContext)();
       if (_auraCtx.state === 'suspended') await _auraCtx.resume();
+      const silent = _auraCtx.createBuffer(1, 256, 24000);
+      const ping = _auraCtx.createBufferSource();
+      ping.buffer = silent;
+      ping.connect(_auraCtx.destination);
+      ping.start();
     } catch {}
     if (!_auraCtx) return null;
+    // Read the user's preferred voice from server config (allows swapping
+    // without a rebuild). Falls back to local default if endpoint fails.
+    try {
+      const cfgR = await api('GET', '/api/voice/config');
+      if (cfgR && cfgR.ok) {
+        const cfg = await cfgR.json();
+        if (cfg && cfg.voice) _auraVoice = cfg.voice;
+      }
+    } catch {}
     const inst = new AuraWS(key, _auraVoice, _auraCtx);
     const ok = await inst.waitOpen(4000);
     if (!ok) {
@@ -3070,7 +3140,7 @@ pushBtn.addEventListener('click', async () => {
 
     const url = URL.createObjectURL(blob);
     const audio = new Audio(url);
-    audio.playbackRate = 1.10;   // slightly snappier delivery — closer to a Jarvis pace; matches WS path
+    audio.playbackRate = 1.15;   // closer to a Jarvis/butler clip; matches WS path
 
     let mediaSrc = null;
     let analyser = null;
@@ -3297,6 +3367,10 @@ pushBtn.addEventListener('click', async () => {
     if (!active) return;
     const finalText = (text && String(text).trim()) || '';
     if (!finalText) return;
+
+    // The user spoke — cancel any pending startup greeting (belt-and-suspenders;
+    // sentrialVoiceUpdate normally catches this earlier on the first interim).
+    _greetingPending = false;
 
     postNative({ type: 'voice_stop_speaking' });
     stopSpeakingIfAny();

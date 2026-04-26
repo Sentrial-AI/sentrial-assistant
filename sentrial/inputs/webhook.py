@@ -139,6 +139,101 @@ def build_app(
             raise HTTPException(status_code=403, detail="bootstrap only allowed from localhost")
         return {"token": kc.ensure_token()}
 
+    @api.get("/api/voice/config", dependencies=[Depends(require_auth)])
+    async def voice_config():
+        """Voice settings the PWA reads at voice-mode start. Override the
+        Aura voice via the `sentrial_voice` keychain entry; default is a
+        deeper, more butler-toned voice rather than Orion's snappier read."""
+        # Default chosen for "Sir" / Jarvis tonal energy — mature, professional,
+        # lower-register than orion. Easily overridable without a redeploy.
+        voice = kc.get("sentrial_voice") or "aura-2-arcas-en"
+        return {"voice": voice}
+
+    @api.get("/api/voice/greeting", dependencies=[Depends(require_auth)])
+    async def voice_greeting():
+        """Short opening line spoken when voice mode opens. Reads the
+        prefetch cache to decide between a casual hi and a brief urgency
+        callout. Kept SHORT — never more than ~12 words — because the user
+        wanted "Sir." or "Yeah?" energy, not a status report."""
+        import random
+        from datetime import datetime, timezone, timedelta
+
+        try:
+            from sentrial.core import context_cache, context_prefetch
+            c = context_cache.cache()
+            todos = c.get_fresh(context_prefetch.KEY_TODOS)
+            cal = c.get_fresh(context_prefetch.KEY_CALENDAR_TODAY)
+        except Exception:  # noqa: BLE001
+            todos, cal = None, None
+
+        # Count "urgent" items: todos due today/overdue, calendar within 60min.
+        now = datetime.now(timezone.utc)
+        soon = now + timedelta(minutes=60)
+        end_of_today = (now + timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0,
+        )
+
+        urgent_n = 0
+        if todos and isinstance(todos.value, list):
+            for t in todos.value:
+                if not isinstance(t, dict):
+                    continue
+                due = t.get("due") or t.get("due_date")
+                if not due:
+                    continue
+                try:
+                    s = str(due).replace("Z", "+00:00")
+                    d = datetime.fromisoformat(s)
+                    if d.tzinfo is None:
+                        d = d.replace(tzinfo=timezone.utc)
+                    if d < end_of_today:
+                        urgent_n += 1
+                except Exception:  # noqa: BLE001
+                    continue
+
+        imminent_event = None
+        if cal and isinstance(cal.value, list):
+            for ev in cal.value:
+                if not isinstance(ev, dict):
+                    continue
+                start = ev.get("start") or (ev.get("when") or {}).get("start")
+                if isinstance(start, dict):
+                    start = start.get("dateTime") or start.get("date")
+                if not start:
+                    continue
+                try:
+                    s = str(start).replace("Z", "+00:00")
+                    d = datetime.fromisoformat(s)
+                    if d.tzinfo is None:
+                        d = d.replace(tzinfo=timezone.utc)
+                    if now <= d <= soon:
+                        imminent_event = (ev.get("summary") or ev.get("title") or "")[:50]
+                        break
+                except Exception:  # noqa: BLE001
+                    continue
+
+        if imminent_event:
+            return {"text": f"Sir — {imminent_event} starts soon."}
+        if urgent_n >= 3:
+            return {"text": f"Sir, {urgent_n} items due today."}
+        if urgent_n == 2:
+            return {"text": "Sir, two items due today."}
+        if urgent_n == 1:
+            return {"text": "Sir — one thing's due today."}
+
+        # Casual ack — vary so it doesn't feel canned.
+        casual = [
+            "Sir.",
+            "Yeah?",
+            "Mm.",
+            "Sir, what's up?",
+            "What can I do?",
+            "Yes sir.",
+            "Hey, what's up?",
+            "Mhm.",
+        ]
+        return {"text": random.choice(casual)}
+
     @api.post("/api/voice/prewarm", dependencies=[Depends(require_auth)])
     async def voice_prewarm():
         """Fire all context prefetchers in parallel and return a snapshot of
