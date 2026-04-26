@@ -31,7 +31,13 @@ DEFAULT_MODEL = "claude-opus-4-6"
 # lessons so Haiku has enough context to answer most voice questions
 # without reaching for tools.
 VOICE_MODEL = "claude-haiku-4-5-20251001"
-VOICE_MAX_TOKENS = 512          # voice replies should be short; caps latency
+# Hard cap on voice reply length. Was 512, lowered to 220 because Haiku will
+# happily produce 30s of audio for an open-ended question ("what are you
+# capable of") if the prompt only suggests brevity. 220 ≈ ~30-40 spoken words
+# ≈ 7-10 seconds of speech, which is the right ceiling for a conversation.
+# If the user asks for detail explicitly, the model can still ask "want more?"
+# and the next turn lifts to whatever fits in 220 again.
+VOICE_MAX_TOKENS = 220
 DEFAULT_MAX_TOKENS = 4096
 MAX_TOOL_ITERATIONS = 12        # guardrail against runaway loops
 
@@ -106,33 +112,34 @@ class Agent:
                 log.warning("self_profile preamble failed (ignored): %s", e)
 
             if is_voice:
-                # The narrate-before-tool rule is what enables perceived sub-1s
-                # latency: model emits a short spoken acknowledgement first, the
-                # UI starts TTS immediately, the tool runs while the user hears
-                # that sentence. Repeated for EACH tool call (including ones
-                # after another tool) so the user never sits in silence between
-                # tool roundtrips. Parallel tool calls when independent because
-                # tool serialization is the dominant latency in chained ops.
                 system = (
                     system
-                    + "\n\n[voice-turn mode] Your reply will be spoken aloud. "
-                    "Keep it to 1-2 short sentences. No bullet lists. No markdown. "
-                    "Be direct and conversational.\n\n"
-                    "Tool-call rules (these matter — silence between tool calls is "
-                    "the #1 thing that makes voice mode feel slow):\n"
+                    + "\n\n[voice-turn mode] Your reply will be spoken aloud.\n\n"
+                    "HARD RULES — every reply must obey ALL of these:\n"
+                    "• MAX 30 spoken words for a normal answer. ~50 words ONLY if "
+                    "the user explicitly asked you to 'explain' or 'tell me about'. "
+                    "Open questions like 'what are you capable of' get the SHORT "
+                    "form — give the headline, then ask if they want detail.\n"
+                    "• ONE OR TWO sentences, no bullet lists, no markdown.\n"
+                    "• Never list more than 3 things. If there are more, give the "
+                    "top 3 and say 'and a few more — want me to keep going?'\n"
+                    "• No filler openings ('Of course', 'Sure thing', 'Great "
+                    "question', 'I'd be happy to'). Start with the answer.\n\n"
+                    "Tool-call rules — silence between tools is the #1 thing that "
+                    "makes voice mode feel slow:\n"
                     "1. Before EVERY tool call — including ones after another tool "
                     "completed — emit ONE short narration sentence first, then make "
                     "the tool call. Examples: 'Let me pull up your calendar.', "
-                    "'Got it. Removing that one now.', 'One sec, looking it up.'\n"
+                    "'Got it. Removing that one now.', 'Looking it up now.'\n"
                     "2. After a tool result, give the answer in ≤1 sentence. Don't "
-                    "summarize what you did — just the result.\n"
-                    "3. When multiple tool calls are independent (e.g. checking "
-                    "calendar AND email), make them in ONE turn as parallel tool "
-                    "calls — do NOT chain them across turns.\n"
-                    "4. Avoid clarifying questions for voice. Pick the most likely "
-                    "interpretation and act; the user can correct you in 2 seconds.\n"
-                    "5. NEVER say 'I'll get back to you' or 'let me think about it' — "
-                    "either answer now or call a tool now."
+                    "recap what you did — just the result.\n"
+                    "3. Independent tool calls in PARALLEL within one turn — never "
+                    "chain calendar + email + notion across separate turns.\n"
+                    "4. Don't ask clarifying questions in voice. Pick the most "
+                    "likely interpretation and act; the user can correct you in 2 "
+                    "seconds. Better to be slightly wrong fast than right and slow.\n"
+                    "5. Never say 'I'll get back to you' or 'let me think' — answer "
+                    "now or call a tool now."
                 )
 
             cached_system = [
@@ -247,16 +254,25 @@ class Agent:
         if is_voice:
             system = (
                 system
-                + "\n\n[voice-turn mode] Your reply will be spoken aloud. "
-                "Keep it to 1-2 short sentences. No bullet lists. No markdown. "
-                "Be direct and conversational.\n\n"
+                + "\n\n[voice-turn mode] Your reply will be spoken aloud.\n\n"
+                "HARD RULES — every reply must obey ALL of these:\n"
+                "• MAX 30 spoken words for a normal answer. ~50 words ONLY if "
+                "the user explicitly asked you to 'explain' or 'tell me about'. "
+                "Open questions like 'what are you capable of' get the SHORT "
+                "form — give the headline, then ask if they want detail.\n"
+                "• ONE OR TWO sentences, no bullet lists, no markdown.\n"
+                "• Never list more than 3 things. If there are more, give the "
+                "top 3 and say 'and a few more — want me to keep going?'\n"
+                "• No filler openings ('Of course', 'Sure thing', 'Great "
+                "question', 'I'd be happy to'). Start with the answer.\n\n"
                 "Tool-call rules:\n"
                 "1. Before EVERY tool call — including ones after another tool "
                 "completed — emit ONE short narration sentence first.\n"
                 "2. After a tool result, give the answer in ≤1 sentence.\n"
                 "3. Make independent tool calls in PARALLEL within one turn.\n"
-                "4. Don't ask clarifying questions in voice — pick the most "
-                "likely interpretation and act."
+                "4. Don't ask clarifying questions in voice — pick + act.\n"
+                "5. Never say 'I'll get back to you' or 'let me think' — answer "
+                "now or call a tool now."
             )
 
         # Cache the system prompt (which is large and stable across turns) so

@@ -2330,9 +2330,15 @@ pushBtn.addEventListener('click', async () => {
       velY += ((tgtY + wobY) - velY) * k;
       velZ += ((tgtZ + wobZ) - velZ) * k;
 
-      angX += 0.01 * velX * dt;
-      angY += 0.01 * velY * dt;
-      angZ += 0.01 * velZ * dt;
+      // Audio drives rotation speed — louder = spins faster, quieter = settles.
+      // The orb feels alive instead of looking like a fixed-rate animation.
+      // Driven by easedExternalPulse which is fed from BOTH the user mic RMS
+      // (while listening) and Sentrial's TTS waveform RMS (while speaking),
+      // so the same modulation applies in both directions of the conversation.
+      const audioBoost = 1 + easedExternalPulse * 2.6;
+      angX += 0.01 * velX * dt * audioBoost;
+      angY += 0.01 * velY * dt * audioBoost;
+      angZ += 0.01 * velZ * dt * audioBoost;
 
       // Pulse decays toward a state baseline every frame.
       const baseline = (currentState === 'speaking') ? 0.58
@@ -2730,70 +2736,74 @@ pushBtn.addEventListener('click', async () => {
   // boundaries, and queue each completed sentence to Aura. Each sentence's
   // mp3 fetch starts IMMEDIATELY (parallel with previous-sentence playback),
   // so only the first sentence pays Aura's ~400-700ms HTTP latency visibly —
-  // subsequent sentences are pre-fetched and decoded into AudioBuffers ready
-  // to play the moment the previous one ends. Result: gapless Aura playback
-  // that starts as soon as the model has emitted its first complete sentence.
+  // subsequent sentences are pre-fetched as Blobs and held ready to play.
+  //
+  // Playback uses HTMLAudioElement + createMediaElementSource — the SAME path
+  // speakAura has been using successfully in this WKWebView. The earlier
+  // version used decodeAudioData + a separate AudioContext, which Safari's
+  // autoplay policy refused to unlock from the SSE event chain → that's why
+  // voice went silent for 30s while the orb showed "speaking". We reuse the
+  // proven _auraCtx that's already wired and unlocked.
   //
   // speechSynthesis is the per-sentence fallback if Aura fails (no key, rate
-  // limit, decode error). Quality dips to system voice in that case but voice
-  // never goes silent.
-  let _ttsCtx = null;
-  let _ttsQ = [];          // [{ promise: Promise<AudioBuffer|null>, fallback: string }]
+  // limit, network blip). Quality dips for that ONE sentence, voice never
+  // goes silent.
+  let _ttsQ = [];           // [{ blobP: Promise<Blob|null>, text: string }]
   let _ttsActive = false;
   let _ttsStop = false;
-  let _ttsSrc = null;       // current AudioBufferSourceNode
-  let _ttsAnalyserBuf = null;
+  let _ttsCurrentAudio = null;   // currently playing HTMLAudioElement
+  let _ttsCurrentMediaSrc = null;
   let _ttsRaf = 0;
-  let _ttsFirstAudio = false; // gates the setState('speaking') flip
-
-  function _ttsEnsureCtx() {
-    if (!_ttsCtx || _ttsCtx.state === 'closed') {
-      _ttsCtx = new (window.AudioContext || window.webkitAudioContext)();
-    }
-    if (_ttsCtx.state === 'suspended') {
-      try { _ttsCtx.resume(); } catch {}
-    }
-  }
+  let _ttsFirstAudio = false;    // gates the setState('speaking') flip
 
   function _ttsResetForTurn() {
     _ttsStop = false;
     _ttsQ = [];
     _ttsActive = false;
     _ttsFirstAudio = false;
-    if (_ttsSrc) { try { _ttsSrc.stop(); } catch {} _ttsSrc = null; }
+    _ttsTeardownCurrent();
+  }
+
+  function _ttsTeardownCurrent() {
+    if (_ttsCurrentAudio) {
+      try { _ttsCurrentAudio.pause(); } catch {}
+      try { _ttsCurrentAudio.src = ''; } catch {}
+      _ttsCurrentAudio = null;
+    }
+    if (_ttsCurrentMediaSrc) {
+      try { _ttsCurrentMediaSrc.disconnect(); } catch {}
+      _ttsCurrentMediaSrc = null;
+    }
     if (_ttsRaf) { cancelAnimationFrame(_ttsRaf); _ttsRaf = 0; }
   }
 
   function _ttsCancel() {
     _ttsStop = true;
-    if (_ttsSrc) { try { _ttsSrc.stop(); } catch {} _ttsSrc = null; }
     _ttsQ = [];
     _ttsActive = false;
-    if (_ttsRaf) { cancelAnimationFrame(_ttsRaf); _ttsRaf = 0; }
+    _ttsTeardownCurrent();
     clearExternalPulse();
   }
   // Expose so stopSpeakingIfAny() can flush the streamed queue too.
   window._sentrialClearStreamQueue = _ttsCancel;
 
-  async function _ttsFetchAuraBuffer(sentence) {
+  async function _ttsFetchAuraBlob(sentence) {
     const key = await _loadAuraKey();
     if (!key) return null;
-    _ttsEnsureCtx();
     const r = await fetch(
-      'https://api.deepgram.com/v1/speak?model=' + encodeURIComponent(_auraVoice) + '&encoding=mp3',
+      'https://api.deepgram.com/v1/speak?model=' + encodeURIComponent(_auraVoice),
       {
         method: 'POST',
-        headers: { 'Authorization': 'Token ' + key, 'Content-Type': 'application/json' },
+        headers: {
+          'Authorization': 'Token ' + key,
+          'Content-Type': 'application/json',
+          'Accept': 'audio/mpeg',
+        },
         body: JSON.stringify({ text: sentence }),
       }
     );
     if (!r.ok) throw new Error('aura_' + r.status);
-    const ab = await r.arrayBuffer();
-    // decodeAudioData wants a fresh ArrayBuffer; some Safari builds reject
-    // a buffer that's been touched, so we hand it directly.
-    return await new Promise((res, rej) => {
-      _ttsCtx.decodeAudioData(ab, res, rej);
-    });
+    return await r.blob();
   }
 
   function _streamSpeak(text) {
@@ -2805,13 +2815,19 @@ pushBtn.addEventListener('click', async () => {
     if (_ttsStop) return;
     sentence = stripForSpeech(sentence);
     if (!sentence) return;
-
-    // Kick off the fetch immediately so it overlaps with whatever's playing.
-    // .catch() so a single failed sentence doesn't break the queue — drain()
-    // will see null and fall back to speechSynthesis for that one item.
-    const promise = _ttsFetchAuraBuffer(sentence).catch(() => null);
-    _ttsQ.push({ promise, fallback: sentence });
+    // Kick off the fetch immediately — multiple sentences fetch in parallel.
+    // .catch() so a single failed sentence falls through to speechSynthesis
+    // without breaking the rest of the queue.
+    const blobP = _ttsFetchAuraBlob(sentence).catch(() => null);
+    _ttsQ.push({ blobP, text: sentence });
     if (!_ttsActive) _ttsDrain();
+  }
+
+  function _ttsFlipToSpeakingIfFirst() {
+    if (_ttsFirstAudio) return;
+    _ttsFirstAudio = true;
+    setState('speaking');
+    hint.textContent = 'Speak anytime to interrupt';
   }
 
   async function _ttsDrain() {
@@ -2819,70 +2835,105 @@ pushBtn.addEventListener('click', async () => {
     _ttsActive = true;
     const item = _ttsQ.shift();
 
-    let buf = null;
-    try { buf = await item.promise; } catch { buf = null; }
+    let blob = null;
+    try { blob = await item.blobP; } catch { blob = null; }
     if (_ttsStop) { _ttsActive = false; return; }
 
-    if (!buf) {
-      // Aura failed for this sentence — degrade to browser TTS for it only.
-      // First-audio state flip happens here too so the orb still goes yellow
-      // when the user hears something.
-      if (!_ttsFirstAudio) {
-        _ttsFirstAudio = true;
-        setState('speaking');
-        hint.textContent = 'Speak anytime to interrupt';
-      }
-      speakBrowser(item.fallback, _ttsDrain);
+    if (!blob) {
+      _ttsFlipToSpeakingIfFirst();
+      // Browser fallback for this one sentence; advances queue on done.
+      speakBrowser(item.text, _ttsDrain);
       return;
     }
 
-    _ttsEnsureCtx();
-    const src = _ttsCtx.createBufferSource();
-    src.buffer = buf;
-    const analyser = _ttsCtx.createAnalyser();
-    analyser.fftSize = 512;
-    src.connect(analyser);
-    analyser.connect(_ttsCtx.destination);
-    _ttsSrc = src;
+    // Reuse the existing _auraCtx — it was already unlocked by the first
+    // user gesture (Right-Option press → voice mode start). Only create one
+    // if speakAura hasn't yet (rare on first-ever turn).
+    try {
+      if (!_auraCtx) _auraCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (_auraCtx.state === 'suspended') await _auraCtx.resume();
+    } catch {}
 
-    src.onended = () => {
-      if (_ttsRaf) { cancelAnimationFrame(_ttsRaf); _ttsRaf = 0; }
-      if (_ttsSrc === src) _ttsSrc = null;
-      _ttsDrain();
-    };
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    audio.playbackRate = 1.06;   // slightly snappier delivery — closer to a Jarvis pace
 
-    // Schedule on the next AudioContext tick so the engine has a moment to
-    // wire up the graph; start() with no arg = "as soon as possible".
-    src.start();
-
-    // Flip orb to speaking AT THE MOMENT audio actually starts — fixes the
-    // ~1s "yellow but silent" gap users noticed when state was flipped on
-    // the first text token instead of on first audio.
-    if (!_ttsFirstAudio) {
-      _ttsFirstAudio = true;
-      setState('speaking');
-      hint.textContent = 'Speak anytime to interrupt';
+    let mediaSrc = null;
+    let analyser = null;
+    try {
+      mediaSrc = _auraCtx.createMediaElementSource(audio);
+      analyser = _auraCtx.createAnalyser();
+      analyser.fftSize = 512;
+      analyser.smoothingTimeConstant = 0.55;
+      mediaSrc.connect(analyser);
+      mediaSrc.connect(_auraCtx.destination);  // also direct to output (analyser is read-only)
+    } catch (e) {
+      // If the analyser path fails, fall back to plain audio playback (no
+      // waveform-driven orb pulse, but voice still works).
+      mediaSrc = null;
+      analyser = null;
     }
 
-    // Pulse the orb from this audio's waveform so the visual matches Sentrial's
-    // actual voice level (not just a synthetic "speaking" pulse).
-    if (!_ttsAnalyserBuf || _ttsAnalyserBuf.length !== analyser.fftSize) {
-      _ttsAnalyserBuf = new Uint8Array(analyser.fftSize);
-    }
-    const pulse = () => {
-      if (_ttsStop || _ttsSrc !== src) return;
-      analyser.getByteTimeDomainData(_ttsAnalyserBuf);
-      let sum = 0;
-      for (let i = 0; i < _ttsAnalyserBuf.length; i++) {
-        const d = _ttsAnalyserBuf[i] - 128;
-        sum += d * d;
+    _ttsCurrentAudio = audio;
+    _ttsCurrentMediaSrc = mediaSrc;
+
+    const cleanup = () => {
+      try { URL.revokeObjectURL(url); } catch {}
+      if (_ttsCurrentAudio === audio) _ttsCurrentAudio = null;
+      if (_ttsCurrentMediaSrc === mediaSrc) {
+        try { mediaSrc && mediaSrc.disconnect(); } catch {}
+        _ttsCurrentMediaSrc = null;
       }
-      const rms = Math.sqrt(sum / _ttsAnalyserBuf.length) / 128;
-      const shaped = Math.min(1, Math.pow(rms * 3, 0.6));
-      if (shaped > 0.02) setExternalPulse(shaped, 100);
-      _ttsRaf = requestAnimationFrame(pulse);
+      if (_ttsRaf) { cancelAnimationFrame(_ttsRaf); _ttsRaf = 0; }
     };
-    pulse();
+
+    audio.addEventListener('play', () => {
+      _ttsFlipToSpeakingIfFirst();
+      if (analyser) {
+        const buf = new Uint8Array(analyser.fftSize);
+        const tick = () => {
+          if (_ttsStop || _ttsCurrentAudio !== audio || audio.paused || audio.ended) return;
+          analyser.getByteTimeDomainData(buf);
+          let sum = 0;
+          for (let i = 0; i < buf.length; i++) {
+            const d = buf[i] - 128;
+            sum += d * d;
+          }
+          const rms = Math.sqrt(sum / buf.length) / 128;
+          // Stronger shaping curve — user said the orb "barely moves" while
+          // Sentrial speaks. Push the visible response harder.
+          const shaped = Math.min(1, Math.pow(rms * 4.2, 0.50));
+          if (shaped > 0.015) setExternalPulse(shaped, 130);
+          _ttsRaf = requestAnimationFrame(tick);
+        };
+        tick();
+      }
+    });
+    audio.addEventListener('ended', () => { cleanup(); _ttsDrain(); });
+    audio.addEventListener('error', () => {
+      cleanup();
+      // Try speechSynthesis for this sentence so the user doesn't lose it.
+      if (!_ttsStop) speakBrowser(item.text, _ttsDrain);
+      else _ttsActive = false;
+    });
+
+    let played = false;
+    try {
+      const p = audio.play();
+      if (p && typeof p.then === 'function') {
+        await p;
+        played = true;
+      } else {
+        played = true;
+      }
+    } catch (e) {
+      cleanup();
+      if (!_ttsStop) speakBrowser(item.text, _ttsDrain);
+      else _ttsActive = false;
+      return;
+    }
+    // If we got here, audio.play() resolved — onplay/onended will drive the
+    // rest. _ttsDrain will be re-entered from the 'ended' listener.
   }
 
   // Pull complete sentences out of a running buffer. Returns
@@ -2980,7 +3031,7 @@ pushBtn.addEventListener('click', async () => {
     // Wait for the queue to drain (Aura fetches + playback) before flipping
     // back to listening. Voice mode shouldn't race the user with overlapping
     // state changes.
-    while (_ttsActive || _ttsQ.length > 0 || _ttsSrc) {
+    while (_ttsActive || _ttsQ.length > 0 || _ttsCurrentAudio) {
       if (mySeq !== turnSeq) { _ttsCancel(); return; }
       await new Promise((res) => setTimeout(res, 80));
     }
