@@ -61,6 +61,126 @@ class Agent:
 
     # ----- public API -----
 
+    async def turn_stream(
+        self,
+        user_message: str,
+        channel: str,
+        conversation_id: str | None = None,
+    ):
+        """Streaming version of turn(). Yields dict events as the model
+        generates, so the caller (e.g. /inbound_stream) can pump them down
+        an SSE pipe and the UI can start TTS on the first sentence.
+
+        Event shapes:
+            {"type": "text",  "delta": str}            — incremental token text
+            {"type": "tool_start", "name": str}         — about to run a tool
+            {"type": "tool_done",  "name": str}         — tool finished
+            {"type": "done", "text": str, "conv_id": str}
+            {"type": "error", "message": str}
+
+        Mirrors turn()'s memory + distill + self-profile bookkeeping at end.
+        """
+        conv_id = conversation_id or uuid.uuid4().hex[:12]
+        try:
+            retrieved = self._retrieve_context(user_message)
+            legacy = self._build_memory_preamble()
+            composed = (retrieved + legacy + user_message) if (retrieved or legacy) else user_message
+
+            prev_assistant = self._prev_assistant_text(conv_id)
+            prior_turns = self._load_prior_turns(conv_id, limit=20)
+
+            messages: list[dict] = prior_turns + [{"role": "user", "content": composed}]
+            memory.log_turn(conv_id, channel, {"role": "user", "content": user_message})
+
+            is_voice = channel == "voice"
+            model = VOICE_MODEL if is_voice else self.model
+            max_tokens = VOICE_MAX_TOKENS if is_voice else DEFAULT_MAX_TOKENS
+            system = self.system_prompt
+
+            try:
+                from sentrial.evolution import self_profile
+                self_block = self_profile.summary_for_prompt()
+                if self_block:
+                    system = system + "\n\n[identity — your evolving self]\n" + self_block
+            except Exception as e:  # noqa: BLE001
+                log.warning("self_profile preamble failed (ignored): %s", e)
+
+            if is_voice:
+                # The "narrate before tool" line is what enables sub-1s perceived
+                # latency: when the model decides to use a tool, it emits a short
+                # spoken acknowledgement first, the UI starts TTS immediately, and
+                # the tool runs while the user hears that filler sentence.
+                system = (
+                    system
+                    + "\n\n[voice-turn mode] Your reply will be spoken aloud. "
+                    "Keep it to 1-2 short sentences. No bullet lists. No markdown "
+                    "formatting. Be direct and conversational. "
+                    "If you need to call a tool that may take a moment, FIRST emit "
+                    "one short sentence narrating what you're about to do "
+                    "(e.g. 'Let me check the calendar.'), THEN make the tool call. "
+                    "This keeps the user from waiting in silence."
+                )
+
+            cached_system = [
+                {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
+            ]
+
+            full_text_parts: list[str] = []
+            final_assistant_content: list = []
+
+            for iteration in range(MAX_TOOL_ITERATIONS):
+                async with self.client.messages.stream(
+                    model=model,
+                    max_tokens=max_tokens,
+                    system=cached_system,
+                    tools=self.tools,
+                    messages=messages,
+                ) as stream:
+                    async for chunk in stream.text_stream:
+                        if chunk:
+                            full_text_parts.append(chunk)
+                            yield {"type": "text", "delta": chunk}
+                    final_msg = await stream.get_final_message()
+
+                final_assistant_content = final_msg.content
+                messages.append({"role": "assistant", "content": final_assistant_content})
+
+                if final_msg.stop_reason == "end_turn":
+                    break
+
+                if final_msg.stop_reason == "tool_use":
+                    tool_blocks = [
+                        b for b in final_assistant_content
+                        if getattr(b, "type", None) == "tool_use"
+                    ]
+                    for b in tool_blocks:
+                        yield {"type": "tool_start", "name": b.name}
+                    tool_results = await self._execute_tool_calls(final_assistant_content)
+                    for b in tool_blocks:
+                        yield {"type": "tool_done", "name": b.name}
+                    messages.append({"role": "user", "content": tool_results})
+                    continue
+
+                yield {"type": "error", "message": f"unexpected stop_reason={final_msg.stop_reason}"}
+                return
+
+            text = "".join(full_text_parts).strip()
+            memory.log_turn(conv_id, channel, {"role": "assistant", "content": text})
+            try:
+                from sentrial.evolution import self_profile
+                new_conv = not bool(prior_turns)
+                self_profile.bump_stats(turns_delta=1, new_conversation=new_conv)
+            except Exception as e:  # noqa: BLE001
+                log.warning("self_profile.bump_stats failed (ignored): %s", e)
+            self._schedule_distill(
+                user_message=user_message, assistant_reply=text,
+                prev_assistant=prev_assistant, conversation_id=conv_id,
+            )
+            yield {"type": "done", "text": text, "conv_id": conv_id}
+        except Exception as e:  # noqa: BLE001
+            log.exception("turn_stream failed")
+            yield {"type": "error", "message": str(e)}
+
     async def turn(
         self,
         user_message: str,
@@ -97,6 +217,19 @@ class Agent:
         model = VOICE_MODEL if is_voice else self.model
         max_tokens = VOICE_MAX_TOKENS if is_voice else DEFAULT_MAX_TOKENS
         system = self.system_prompt
+
+        # Inject Sentrial's evolving self-profile — persona traits, values,
+        # growth log, recent memories. This is THE thing that gives Sentrial a
+        # coherent identity across conversations: the LLM sees who it has
+        # become, not just who the static system prompt said it was.
+        try:
+            from sentrial.evolution import self_profile
+            self_block = self_profile.summary_for_prompt()
+            if self_block:
+                system = system + "\n\n[identity — your evolving self]\n" + self_block
+        except Exception as e:  # noqa: BLE001
+            log.warning("self_profile preamble failed (ignored): %s", e)
+
         if is_voice:
             system = (
                 system
@@ -129,6 +262,15 @@ class Agent:
             if resp.stop_reason == "end_turn":
                 text = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
                 memory.log_turn(conv_id, channel, {"role": "assistant", "content": text})
+                # Bump self-profile counters; first turn of a conversation also
+                # increments total_conversations. Off the critical path; failures
+                # don't affect the reply.
+                try:
+                    from sentrial.evolution import self_profile
+                    new_conv = not bool(prior_turns)
+                    self_profile.bump_stats(turns_delta=1, new_conversation=new_conv)
+                except Exception as e:  # noqa: BLE001
+                    log.warning("self_profile.bump_stats failed (ignored): %s", e)
                 # Fire-and-forget distillation — doesn't block the reply.
                 self._schedule_distill(
                     user_message=user_message, assistant_reply=text,

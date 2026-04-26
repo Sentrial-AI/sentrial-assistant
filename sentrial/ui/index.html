@@ -2724,6 +2724,178 @@ pushBtn.addEventListener('click', async () => {
     return;
   };
 
+  // ----- Streaming voice turn: per-sentence TTS -----
+  //
+  // /inbound_stream returns SSE; we accumulate text deltas, split on sentence
+  // boundaries, and queue each completed sentence to speechSynthesis. That's
+  // what gives perceived sub-1s latency: the user hears the first sentence
+  // while the model is still generating the rest.
+  //
+  // Browser TTS (speechSynthesis) is used here, not Aura, because per-sentence
+  // Aura would pay an HTTP round-trip per sentence — that wipes out the speed
+  // win. The non-streaming chat path still uses Aura for higher quality.
+  let _streamQ = [];
+  let _streamSpeaking = false;
+  let _streamCanceled = false;
+
+  function _streamSpeak(text) {
+    text = (text || '').trim();
+    if (!text || _streamCanceled) return;
+    _streamQ.push(text);
+    if (!_streamSpeaking) _drainStreamQ();
+  }
+  function _drainStreamQ() {
+    if (_streamCanceled || _streamQ.length === 0) { _streamSpeaking = false; return; }
+    _streamSpeaking = true;
+    const next = _streamQ.shift();
+    speakBrowser(next, _drainStreamQ);
+  }
+  function _clearStreamQueue() {
+    _streamCanceled = true;
+    _streamQ = [];
+    _streamSpeaking = false;
+  }
+  // Expose so stopSpeakingIfAny() can flush the streamed queue too.
+  window._sentrialClearStreamQueue = _clearStreamQueue;
+
+  // Pull complete sentences out of a running buffer. Returns
+  // { complete: string[], remainder: string }. A sentence ends at one of
+  // .!?… followed by whitespace.
+  function _extractSentences(buf) {
+    const re = /([.!?…])(\s+)/g;
+    const complete = [];
+    let lastEnd = 0;
+    let m;
+    while ((m = re.exec(buf))) {
+      const end = m.index + 1;
+      const sent = buf.slice(lastEnd, end).trim();
+      if (sent.length > 1) complete.push(sent);
+      lastEnd = end + m[2].length;
+    }
+    return { complete, remainder: buf.slice(lastEnd) };
+  }
+
+  async function _streamingVoiceTurn(finalText, mySeq) {
+    const r = await fetch('/inbound_stream', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + (STATE.token || ''),
+        'Accept': 'text/event-stream',
+      },
+      body: JSON.stringify({
+        text: finalText,
+        channel: 'voice',
+        conversation_id: STATE.conversationId,
+      }),
+    });
+    if (!r.ok || !r.body) {
+      throw new Error('stream_open_failed_' + r.status);
+    }
+
+    _streamCanceled = false;
+    _streamQ = [];
+    _streamSpeaking = false;
+
+    const reader = r.body.getReader();
+    const dec = new TextDecoder();
+    let raw = '';
+    let textBuf = '';
+    let firstText = false;
+
+    const handleEvent = (ev) => {
+      if (ev.type === 'text') {
+        if (!firstText) {
+          firstText = true;
+          setState('speaking');
+          hint.textContent = 'Speak anytime to interrupt';
+        }
+        textBuf += ev.delta || '';
+        const ext = _extractSentences(textBuf);
+        textBuf = ext.remainder;
+        for (const s of ext.complete) _streamSpeak(s);
+      } else if (ev.type === 'tool_start') {
+        // If the model didn't narrate before calling the tool, drop a generic
+        // filler so the user isn't waiting in silence. The voice-turn system
+        // prompt asks the model to narrate — this is the safety net.
+        if (!firstText && _streamQ.length === 0 && !_streamSpeaking) {
+          _streamSpeak("Hang on, let me check.");
+          firstText = true;
+          setState('speaking');
+          hint.textContent = 'Speak anytime to interrupt';
+        }
+      } else if (ev.type === 'done') {
+        if (textBuf.trim()) _streamSpeak(textBuf.trim());
+        textBuf = '';
+      } else if (ev.type === 'error') {
+        throw new Error(ev.message || 'stream_error');
+      }
+    };
+
+    while (true) {
+      if (mySeq !== turnSeq) {
+        try { reader.cancel(); } catch {}
+        _clearStreamQueue();
+        return;
+      }
+      const { done, value } = await reader.read();
+      if (done) break;
+      raw += dec.decode(value, { stream: true });
+      const idx = raw.lastIndexOf('\n\n');
+      if (idx < 0) continue;
+      const ready = raw.slice(0, idx);
+      raw = raw.slice(idx + 2);
+      for (const frame of ready.split('\n\n')) {
+        const line = frame.trim();
+        if (!line.startsWith('data:')) continue;
+        const j = line.slice(5).trim();
+        let ev;
+        try { ev = JSON.parse(j); } catch { continue; }
+        handleEvent(ev);
+      }
+    }
+
+    // Drain any trailing text that didn't end on punctuation.
+    if (textBuf.trim()) _streamSpeak(textBuf.trim());
+
+    // Wait for the queue to drain before flipping back to listening — voice
+    // mode shouldn't race the user with overlapping state changes.
+    while (_streamSpeaking || _streamQ.length > 0) {
+      if (mySeq !== turnSeq) { _clearStreamQueue(); return; }
+      await new Promise((res) => setTimeout(res, 80));
+    }
+    if (active && mySeq === turnSeq) {
+      setState('listening');
+      transcript.classList.remove('response');
+      transcript.textContent = '';
+      hint.textContent = "I'm listening.";
+    }
+  }
+
+  async function _nonStreamingVoiceTurn(finalText, mySeq) {
+    const r = await api('POST', '/inbound', {
+      text: finalText, channel: 'voice', conversation_id: STATE.conversationId
+    });
+    const d = await r.json();
+    if (mySeq !== turnSeq) return;
+    const reply = d.reply || '(no reply)';
+    transcript.textContent = '';
+    transcript.classList.remove('response');
+    setState('speaking');
+    hint.textContent = 'Speak anytime to interrupt';
+    if (isNative()) {
+      try { postNative({ type: 'voice_reply_started', seq: mySeq }); } catch {}
+    }
+    speak(reply, () => {
+      if (active && mySeq === turnSeq) {
+        setState('listening');
+        transcript.classList.remove('response');
+        transcript.textContent = '';
+        hint.textContent = "I'm listening.";
+      }
+    });
+  }
+
   // Per-utterance turn (continuous + interruptible).
   // If the user speaks while Sentrial is replying/thinking, stop TTS, supersede, take new turn.
   window.sentrialVoiceTurn = async function (text) {
@@ -2731,7 +2903,6 @@ pushBtn.addEventListener('click', async () => {
     const finalText = (text && String(text).trim()) || '';
     if (!finalText) return;
 
-    // Interrupt: stop any current TTS and bump the sequence number
     postNative({ type: 'voice_stop_speaking' });
     stopSpeakingIfAny();
 
@@ -2740,47 +2911,27 @@ pushBtn.addEventListener('click', async () => {
 
     setState('thinking');
     hint.textContent = 'Thinking…';
-    // Voice mode = pure voice. No text echoed under the globe, no chat
-    // transcript messages appearing while speaking. The turn is still
-    // recorded to the backend conversation (via /inbound) so the Chat tab
-    // shows it after Voice Mode closes.
     transcript.textContent = '';
     transcript.classList.remove('response');
 
+    if (isNative()) {
+      try { postNative({ type: 'voice_reply_started', seq: mySeq }); } catch {}
+    }
+
     try {
-      const r = await api('POST', '/inbound', {
-        text: finalText, channel: 'voice', conversation_id: STATE.conversationId
-      });
-      const d = await r.json();
-      // Superseded? (User spoke again while we were fetching.)
-      if (mySeq !== turnSeq) return;
-      const reply = d.reply || '(no reply)';
-
-      transcript.textContent = '';
-      transcript.classList.remove('response');
-      setState('speaking');
-      hint.textContent = 'Speak anytime to interrupt';
-
-      // TTS always goes through the browser now — the old native Aura REST
-      // path took ~40s for long replies (full synth → MP3 download → afplay),
-      // vs. speechSynthesis which starts on the first word. Router logic
-      // still postNative's a voice_reply tag so native can keep Right-Option
-      // hotkey interrupts in sync, but native no longer renders audio.
-      if (isNative()) {
-        try { postNative({ type: 'voice_reply_started', seq: mySeq }); } catch {}
-      }
-      speak(reply, () => {
-        if (active && mySeq === turnSeq) {
-          setState('listening');
-          transcript.classList.remove('response');
-          transcript.textContent = '';
-          hint.textContent = "I'm listening.";
-        }
-      });
+      await _streamingVoiceTurn(finalText, mySeq);
     } catch (e) {
       if (mySeq !== turnSeq) return;
-      transcript.textContent = '[error] ' + e.message;
-      setState('listening');
+      // Streaming failed (older backend, network hiccup, parser issue) —
+      // degrade gracefully to the non-streaming /inbound path. User shouldn't
+      // notice anything beyond the slower first-audio.
+      try {
+        await _nonStreamingVoiceTurn(finalText, mySeq);
+      } catch (e2) {
+        if (mySeq !== turnSeq) return;
+        transcript.textContent = '[error] ' + (e2 && e2.message || String(e2));
+        setState('listening');
+      }
     }
   };
 
@@ -3062,6 +3213,9 @@ pushBtn.addEventListener('click', async () => {
     }
     if (_auraRaf) { cancelAnimationFrame(_auraRaf); _auraRaf = 0; }
     clearExternalPulse();
+    // Flush any in-flight streamed-sentence queue (defined in the voice-mode
+    // IIFE) so an interrupt actually halts mid-reply.
+    try { window._sentrialClearStreamQueue && window._sentrialClearStreamQueue(); } catch {}
   }
 
   // --- Mobile voice (webkitSpeechRecognition) ---

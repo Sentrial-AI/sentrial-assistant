@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING
 
 import uvicorn
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -172,6 +172,47 @@ def build_app(
             return {"ok": True, "received": body.text, "reply": None}
         reply = await agent.turn(body.text, channel=body.channel, conversation_id=body.conversation_id)
         return {"ok": True, "reply": reply}
+
+    @api.post("/inbound_stream", dependencies=[Depends(require_auth)])
+    async def inbound_stream(body: Inbound):
+        """Streaming variant of /inbound. Returns SSE events as the model
+        generates so the UI can start TTS on the first sentence rather than
+        waiting for the whole reply. Each event is one JSON object on a single
+        `data:` line per the SSE spec.
+
+        Voice mode is the primary consumer — the per-sentence TTS path in
+        index.html turns this into perceived sub-1s latency."""
+        import json as _json
+        audit.log(
+            "user", "inbound_stream", 0,
+            args={"channel": body.channel, "conv_id": body.conversation_id},
+            result=body.text[:300],
+        )
+
+        async def gen():
+            if agent is None:
+                yield "data: " + _json.dumps({"type": "error", "message": "agent not wired"}) + "\n\n"
+                return
+            try:
+                async for ev in agent.turn_stream(
+                    body.text,
+                    channel=body.channel,
+                    conversation_id=body.conversation_id,
+                ):
+                    yield "data: " + _json.dumps(ev) + "\n\n"
+            except Exception as e:  # noqa: BLE001
+                yield "data: " + _json.dumps({"type": "error", "message": str(e)}) + "\n\n"
+
+        return StreamingResponse(
+            gen(),
+            media_type="text/event-stream",
+            headers={
+                # Disable proxy buffering so events arrive immediately.
+                "Cache-Control": "no-cache, no-transform",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+            },
+        )
 
     @api.post("/approve", dependencies=[Depends(require_auth)])
     async def approve(body: ApproveBody):
