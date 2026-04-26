@@ -136,6 +136,175 @@ async def approve_job(args: dict) -> Any:
     return {"ok": True, "job_id": jid, "status": "approved"}
 
 
+async def list_proposals(_args: dict) -> Any:
+    """Return recent proposals with their status + deliverable path. Used by
+    the agent when Liam asks 'what proposals do I have?'"""
+    if _runner is None:
+        return {"error": "task runner not registered"}
+    items = []
+    for j in _runner.list_recent(30):
+        if j.kind != "proposal":
+            continue
+        jp = j.params or {}
+        deliv = DELIVERABLES_DIR / j.id / "proposal.html"
+        items.append({
+            "job_id": j.id,
+            "client": jp.get("client") or "(unknown)",
+            "brand": jp.get("brand") or "sentrial",
+            "format": jp.get("format") or "major",
+            "status": j.status.value,
+            "created_at": j.created_at,
+            "ready": deliv.exists(),
+            "deliverable_path": str(deliv) if deliv.exists() else None,
+        })
+    return {"proposals": items, "count": len(items)}
+
+
+async def delete_proposal(args: dict) -> Any:
+    """Delete a proposal — removes its job record + the deliverable folder.
+    Tier SEND because it's destructive (the proposal HTML is gone)."""
+    if _runner is None:
+        return {"error": "task runner not registered"}
+    jid = (args.get("job_id") or "").strip()
+    if not jid:
+        return {"error": "job_id required"}
+    job = _runner.get(jid)
+    if job is None:
+        return {"error": f"no job with id {jid}"}
+    if job.kind != "proposal":
+        return {"error": f"job {jid} is kind={job.kind}, not a proposal"}
+
+    out_dir = DELIVERABLES_DIR / jid
+    removed_files = 0
+    if out_dir.exists():
+        try:
+            for p in out_dir.rglob("*"):
+                if p.is_file():
+                    p.unlink()
+                    removed_files += 1
+            try:
+                out_dir.rmdir()
+            except OSError:
+                pass
+        except Exception as e:  # noqa: BLE001
+            return {"error": f"deliverable cleanup failed: {e}"}
+    # Remove from in-memory + persisted job store
+    try:
+        _runner.delete(jid)
+    except AttributeError:
+        # Fall back: just drop from the dict if no .delete()
+        _runner.jobs.pop(jid, None)
+
+    audit.log("user", "delete_proposal", 2, args={"job_id": jid},
+              result=f"removed {removed_files} file(s)")
+    return {"ok": True, "job_id": jid, "removed_files": removed_files}
+
+
+async def edit_proposal(args: dict) -> Any:
+    """Edit a proposal by patching its structured JSON sidecar and re-rendering.
+    Cheap: uses the same template as the original — no LLM call unless the
+    user asked to regenerate the prose.
+
+    Args:
+      job_id      — which proposal to edit
+      patch       — dict of fields to overwrite (title / subtitle / intro /
+                    pricing / timeline / next_steps). For sections, pass
+                    sections (full replacement list).
+      regenerate  — if true AND a 'request' is provided, re-call the LLM
+                    with the new request as additional brief; otherwise just
+                    splice in the patch and re-render.
+    """
+    if _runner is None:
+        return {"error": "task runner not registered"}
+    jid = (args.get("job_id") or "").strip()
+    if not jid:
+        return {"error": "job_id required"}
+    patch = args.get("patch") or {}
+    if not isinstance(patch, dict) or not patch:
+        return {"error": "patch (dict of fields to update) required"}
+
+    out_dir = DELIVERABLES_DIR / jid
+    json_path = out_dir / "proposal.json"
+    html_path = out_dir / "proposal.html"
+    if not json_path.exists():
+        return {"error": f"proposal {jid} has no JSON sidecar — can't edit (try regenerating)"}
+
+    import json as _json
+    structured = _json.loads(json_path.read_text(encoding="utf-8"))
+
+    # Apply allowed top-level patches
+    allowed = {"title", "subtitle", "intro", "pricing", "timeline", "next_steps", "sections"}
+    applied = []
+    for k, v in patch.items():
+        if k in allowed:
+            structured[k] = v
+            applied.append(k)
+    if not applied:
+        return {"error": f"no editable fields in patch — allowed: {sorted(allowed)}"}
+
+    # Re-render via the same brand template + format the original used.
+    from sentrial.mcps.proposals.generator import ProposalBrief
+    from sentrial.mcps.proposals.templates import pursuit, sentrial as sent_tpl
+
+    meta = structured.get("_meta") or {}
+    brand = meta.get("brand") or "sentrial"
+    fmt_ = meta.get("format") or "major"
+    client = meta.get("client") or "Client"
+    brief = ProposalBrief(
+        client=client, brief="(edit)", brand=brand, format=fmt_,
+    ).normalize()
+    html = (pursuit if brand == "pursuit" else sent_tpl).render(structured, brief)
+    html_path.write_text(html, encoding="utf-8")
+    json_path.write_text(_json.dumps(structured, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    audit.log("user", "edit_proposal", 1,
+              args={"job_id": jid, "patched": applied},
+              result=str(html_path))
+    return {
+        "ok": True,
+        "job_id": jid,
+        "patched_fields": applied,
+        "deliverable_path": str(html_path),
+    }
+
+
+async def preview_proposal(args: dict) -> Any:
+    """Open a preview window for a proposal. Returns a URL the menubar's
+    PWA can pop into a floating window via the JS bridge.
+    """
+    if _runner is None:
+        return {"error": "task runner not registered"}
+    jid = (args.get("job_id") or "").strip()
+    if not jid:
+        return {"error": "job_id required"}
+    out_dir = DELIVERABLES_DIR / jid
+    html_path = out_dir / "proposal.html"
+    if not html_path.exists():
+        return {"error": f"proposal {jid} has no rendered HTML yet"}
+
+    # Returned URL is served by the existing /deliverables/<job_id>/proposal.html
+    # route (added in webhook.py companion edit). The PWA's preview bridge
+    # opens this in a floating window.
+    return {
+        "ok": True,
+        "job_id": jid,
+        "preview_url": f"/deliverables/{jid}/proposal.html",
+        "next_step": (
+            "Tell Liam 'Opening it now' and call the JS bridge "
+            "window.sentrialOpenPreview(url) — handled by the PWA."
+        ),
+    }
+
+
+async def close_preview(_args: dict) -> Any:
+    """Voice command: 'close that window' → JS bridge closes the preview.
+    The agent emits this; the PWA wires window.sentrialClosePreview()."""
+    return {
+        "ok": True,
+        "next_step": "Tell PWA to close the preview window via window.sentrialClosePreview().",
+    }
+
+
 async def start_proposal(args: dict) -> Any:
     """High-level wrapper around start_background_job for proposals. Voice-
     friendly: agent fills out brand/format/client/brief from the conversation
@@ -167,6 +336,44 @@ async def start_proposal(args: dict) -> Any:
         brand = "sentrial"
     if format_ not in {"one_pager", "major"}:
         format_ = "major"
+
+    # Dedup: if we just queued an identical proposal in the last 60s, return
+    # that job's id instead of creating a duplicate. Defends against:
+    #   - the LLM emitting two parallel start_proposal tool_use blocks
+    #     in the same turn
+    #   - the user adding details after the agent already kicked off the
+    #     job, triggering a fresh utterance that the agent processes as
+    #     a NEW request
+    # Both were producing duplicate proposals visible in the Agents tab.
+    from datetime import datetime as _dt, timezone as _tz
+    now = _dt.now(_tz.utc)
+    for j in _runner.list_recent(20):
+        if j.kind != "proposal":
+            continue
+        jp = j.params or {}
+        if (jp.get("client") or "").strip().lower() != client.lower():
+            continue
+        if (jp.get("brief") or "").strip() != brief:
+            continue
+        try:
+            j_at = _dt.fromisoformat(j.created_at.replace("Z", "+00:00"))
+            if j_at.tzinfo is None:
+                j_at = j_at.replace(tzinfo=_tz.utc)
+        except Exception:
+            continue
+        if (now - j_at).total_seconds() < 60:
+            return {
+                "ok": True,
+                "job_id": j.id,
+                "duplicate": True,
+                "status": j.status.value,
+                "next_step": (
+                    f"This is a duplicate request for the same proposal "
+                    f"queued {int((now - j_at).total_seconds())}s ago. "
+                    f"DON'T re-confirm; just tell Liam it's already "
+                    f"drafting and end the turn."
+                ),
+            }
 
     # Auto-build a scope_preview from inputs so voice doesn't have to.
     fmt_label = "one-pager" if format_ == "one_pager" else "full proposal"
@@ -411,6 +618,88 @@ TOOLS = [
         },
         impl=approve_job,
         tier=Tier.SEND,
+    ),
+    Tool(
+        name="list_proposals",
+        description=(
+            "List recent proposals with status, brand, format, and whether "
+            "the rendered HTML is ready. Use when Liam asks 'what proposals "
+            "do I have?' or before deleting/editing — gives you the job_id."
+        ),
+        input_schema={"type": "object", "properties": {}},
+        impl=list_proposals,
+        tier=Tier.READ,
+    ),
+    Tool(
+        name="delete_proposal",
+        description=(
+            "Permanently delete a proposal — removes the job record AND "
+            "the deliverable HTML/JSON. Tier SEND. Use when Liam says "
+            "'delete the [X] proposal' / 'remove that one'. Get the "
+            "job_id from list_proposals first."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {"job_id": {"type": "string"}},
+            "required": ["job_id"],
+        },
+        impl=delete_proposal,
+        tier=Tier.SEND,
+    ),
+    Tool(
+        name="edit_proposal",
+        description=(
+            "Patch specific fields of an existing proposal and re-render "
+            "the HTML. No LLM call — just splices the patch into the "
+            "structured JSON sidecar and re-runs the brand template. Fast. "
+            "Use for surgical edits like 'change the price to $12k' or "
+            "'rewrite the intro to mention urgency'."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "job_id": {"type": "string"},
+                "patch": {
+                    "type": "object",
+                    "description": (
+                        "Fields to overwrite. Allowed top-level keys: "
+                        "title, subtitle, intro, pricing, timeline, "
+                        "next_steps, sections (sections is a full list "
+                        "replacement)."
+                    ),
+                    "additionalProperties": True,
+                },
+            },
+            "required": ["job_id", "patch"],
+        },
+        impl=edit_proposal,
+        tier=Tier.DRAFT,
+    ),
+    Tool(
+        name="preview_proposal",
+        description=(
+            "Open a preview window showing the rendered proposal HTML. "
+            "Returns a URL that the PWA pops into a floating window via "
+            "the JS bridge. Use when Liam says 'show me the [X] proposal' "
+            "/ 'open that one'."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {"job_id": {"type": "string"}},
+            "required": ["job_id"],
+        },
+        impl=preview_proposal,
+        tier=Tier.READ,
+    ),
+    Tool(
+        name="close_preview",
+        description=(
+            "Close the proposal preview window. Use when Liam says 'close "
+            "that window' / 'close the preview'."
+        ),
+        input_schema={"type": "object", "properties": {}},
+        impl=close_preview,
+        tier=Tier.READ,
     ),
     Tool(
         name="start_proposal",

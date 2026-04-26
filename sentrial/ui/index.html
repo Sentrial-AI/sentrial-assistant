@@ -2761,11 +2761,12 @@ pushBtn.addEventListener('click', async () => {
       interim_results: 'true',
       punctuate: 'true',
       smart_format: 'true',
-      // 700ms of silence to call utterance done. Was 400 — still cut Liam
-      // off when speaking in long succession with sub-400ms breath pauses.
-      // 700ms is forgiving enough for natural thinking pauses + breath
-      // breaks; response still feels prompt after a real stop.
-      endpointing: '700',
+      // 1000ms of silence to call utterance done. Liam reported still
+      // being cut off at 700. 1000ms is the comfortable conversational
+      // pause budget. Combined with is_final-only triggering (we ignore
+      // Deepgram's more aggressive speech_final), this gives a full
+      // second of "still talking, just thinking" tolerance.
+      endpointing: '1000',
       // NB: utterance_end_ms had been set to 800 a few commits ago — that's
       // BELOW Deepgram's documented minimum (1000), so every WS upgrade was
       // rejected with HTTP 400, which the browser masks as the opaque 1006
@@ -3655,6 +3656,24 @@ pushBtn.addEventListener('click', async () => {
           _streamSpeak("Hang on, let me check.");
           firstText = true;
         }
+      } else if (ev.type === 'ui_action') {
+        // Server tells us a tool wants the PWA to do something — open or
+        // close the proposal preview window. Decoupled from the model's
+        // narration so the popup actually fires whether the model
+        // remembered to "tell the PWA" or not.
+        try {
+          if (ev.action === 'open_preview' && ev.url) {
+            if (typeof window.sentrialOpenPreview === 'function') {
+              window.sentrialOpenPreview(ev.url);
+            }
+          } else if (ev.action === 'close_preview') {
+            if (typeof window.sentrialClosePreview === 'function') {
+              window.sentrialClosePreview();
+            }
+          }
+        } catch (e) {
+          console.warn('ui_action handling failed:', e);
+        }
       } else if (ev.type === 'done') {
         if (textBuf.trim()) _streamSpeak(textBuf.trim());
         textBuf = '';
@@ -3708,10 +3727,14 @@ pushBtn.addEventListener('click', async () => {
       if (!_wsAura) return true;
       if (!_auraCtx) return true;
       const ahead = (_wsAura.nextStart || 0) - _auraCtx.currentTime;
-      return ahead <= 0.05;  // 50ms slack
+      return ahead <= 0.0;   // strict — wait until clock has passed nextStart
     };
     const startedWaitingAt = performance.now();
-    const MAX_WAIT_MS = 8000;
+    // 4s absolute max — was 8s, too long when something legitimately
+    // hangs. 4s is well above any realistic single-utterance audio length
+    // for our voice-mode caps (220 max_tokens × 1.15 playback ≈ ~6s of
+    // audio total per reply, but waited-for tail rarely > 1s).
+    const MAX_WAIT_MS = 4000;
     while (_ttsActive || _ttsQ.length > 0 || _ttsCurrentAudio || !wsAudioEnded()) {
       if (mySeq !== turnSeq) { _ttsCancel(); return; }
       if (performance.now() - startedWaitingAt > MAX_WAIT_MS) {
@@ -3810,6 +3833,42 @@ pushBtn.addEventListener('click', async () => {
 
   // Native exit (user tapped Right-Option again while voice mode was on).
   window.sentrialVoiceExit = function () { hide(); };
+
+  // ===== Proposal preview window bridge =====
+  //
+  // The agent's preview_proposal tool returns a URL like
+  // /deliverables/<job_id>/proposal.html. The PWA pops it into a small
+  // floating browser window that can be closed by voice via the
+  // close_preview tool.
+  let _previewWin = null;
+  window.sentrialOpenPreview = function (url) {
+    try {
+      // Close any prior preview before opening a new one — prevents stack-up.
+      if (_previewWin && !_previewWin.closed) {
+        try { _previewWin.close(); } catch {}
+      }
+      // The URL needs the bearer token for /deliverables/* (it's authed).
+      // Append it as a query param so the popup's first request includes it.
+      // We then redirect in the popup to strip it back out for cleanliness.
+      const u = new URL(url, window.location.origin);
+      u.searchParams.set('token', STATE.token || '');
+      _previewWin = window.open(
+        u.toString(),
+        'sentrial_preview',
+        'width=820,height=1000,menubar=no,toolbar=no,location=no'
+      );
+      return !!_previewWin;
+    } catch (e) {
+      console.warn('preview open failed:', e);
+      return false;
+    }
+  };
+  window.sentrialClosePreview = function () {
+    try {
+      if (_previewWin && !_previewWin.closed) _previewWin.close();
+    } catch {}
+    _previewWin = null;
+  };
 
   window.sentrialVoiceError = function (err) {
     if (active) {

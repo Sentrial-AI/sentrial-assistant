@@ -326,6 +326,29 @@ def build_app(
 
         return out
 
+    @api.get("/deliverables/{job_id}/{filename}", dependencies=[Depends(require_auth)])
+    async def serve_deliverable(job_id: str, filename: str):
+        """Serve a rendered deliverable file (proposal.html, proposal.json,
+        etc.). Path-traversal-safe: rejects ../ in either segment, and the
+        resolved path must stay within DELIVERABLES_DIR.
+
+        Used by the proposal preview window — the agent calls preview_proposal
+        which returns a URL like /deliverables/<job_id>/proposal.html and the
+        PWA pops that into a floating window."""
+        from sentrial.core import paths as _paths
+        if "/" in job_id or "/" in filename or ".." in job_id or ".." in filename:
+            raise HTTPException(status_code=400, detail="invalid path")
+        base = _paths.deliverables_dir().resolve()
+        target = (base / job_id / filename).resolve()
+        # Containment check — target must live under base.
+        try:
+            target.relative_to(base)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="path escapes deliverables dir")
+        if not target.exists() or not target.is_file():
+            raise HTTPException(status_code=404, detail="not found")
+        return FileResponse(str(target))
+
     @api.get("/api/voice/test_key", dependencies=[Depends(require_auth)])
     async def voice_test_key():
         """Definitive check: does our Deepgram key actually authenticate?

@@ -147,20 +147,38 @@ class Agent:
                     "unless that IS the literal question.\n"
                     "• If genuinely ambiguous, ask ONE crisp clarifying "
                     "question — but pick + act when intent is clear.\n\n"
-                    "Proposal flow (Liam's bread and butter — get this right):\n"
-                    "• 'Build me a proposal for X' / 'draft a pitch for X' / "
-                    "'write a proposal' → use the start_proposal tool. ALWAYS.\n"
-                    "• Brand inference: if Liam mentioned Pursuit Visuals OR "
-                    "the work is video/photo/production/content → brand=\"pursuit\". "
-                    "Otherwise → brand=\"sentrial\" (AI agency, the default).\n"
-                    "• Format inference: 'quick / short / one-page / one-pager / "
-                    "skim' → format=\"one_pager\". Default 'major' for full pitches.\n"
-                    "• Gather just enough by voice — client name + a sentence or "
-                    "two of brief is plenty. Don't interrogate; the generator "
-                    "fills in the rest. If pricing or deadline came up, pass them "
-                    "in pricing_hint / deadline. Then call start_proposal and "
-                    "tell Liam: 'Drafting [brand] [format] for [client] — ready "
-                    "in about [eta].' That's it. Don't wait for the file.\n\n"
+                    "Proposal flow — STRICT THREE-STEP, never skip:\n"
+                    "STEP 1 (gather): When Liam asks for a proposal, FIRST ask "
+                    "for whatever's missing. Required minimums: client name, "
+                    "scope (what they want), pricing direction (even rough), "
+                    "deadline. If he gave it all in the initial ask, skip ahead.\n"
+                    "STEP 2 (confirm): Read the brief back as a single short "
+                    "sentence and ask for explicit confirmation. Example: "
+                    "'Sentrial full proposal for Acme — website rebuild, "
+                    "around 8k, by Friday. Confirm?' Wait for 'yes' / 'go' / "
+                    "'do it' before the next step.\n"
+                    "STEP 3 (submit): ONLY after explicit confirmation, call "
+                    "start_proposal exactly ONCE. Do NOT call it in step 1 "
+                    "and do NOT call it twice in parallel. After the tool "
+                    "returns, say 'Drafting now — ready in about [eta]' and "
+                    "end the turn.\n"
+                    "Brand inference: Pursuit Visuals / video / photo / "
+                    "production / content → brand='pursuit'. Otherwise "
+                    "brand='sentrial' (default).\n"
+                    "Format inference: quick / short / one-page → "
+                    "format='one_pager'. Default 'major'.\n"
+                    "If start_proposal returns duplicate=true, that means "
+                    "you already queued it; just tell Liam it's already "
+                    "drafting and end the turn — DO NOT re-confirm.\n\n"
+                    "Other proposal management (no confirmation gate needed, "
+                    "these are read/cleanup ops):\n"
+                    "• 'List my proposals / what proposals do I have' → "
+                    "list_proposals\n"
+                    "• 'Delete / remove the [X] proposal' → delete_proposal\n"
+                    "• 'Edit the [X] proposal — change Y to Z' → edit_proposal\n"
+                    "• 'Show me / preview / open the [X] proposal' → "
+                    "preview_proposal (opens window). 'Close that window' → "
+                    "close_preview\n\n"
                     "Tool-call rules — silence between tools is the #1 thing that "
                     "makes voice mode feel slow:\n"
                     "1. Before EVERY tool call — including ones after another tool "
@@ -215,6 +233,29 @@ class Agent:
                     tool_results = await self._execute_tool_calls(final_assistant_content)
                     for b in tool_blocks:
                         yield {"type": "tool_done", "name": b.name}
+                    # UI hooks: certain tools want the PWA to do something
+                    # immediately (open a preview window, close it, etc.).
+                    # Inspect each tool result — if it carries a UI action
+                    # signal, emit an SSE ui_action event so the JS bridge
+                    # can fire without depending on the model's narration
+                    # to "tell the PWA" to do it.
+                    for idx, b in enumerate(tool_blocks):
+                        if idx >= len(tool_results):
+                            continue
+                        raw = tool_results[idx].get("content")
+                        if not isinstance(raw, str):
+                            continue
+                        try:
+                            parsed = json.loads(raw)
+                        except Exception:
+                            continue
+                        if not isinstance(parsed, dict):
+                            continue
+                        if b.name == "preview_proposal" and parsed.get("preview_url"):
+                            yield {"type": "ui_action", "action": "open_preview",
+                                   "url": parsed["preview_url"]}
+                        elif b.name == "close_preview":
+                            yield {"type": "ui_action", "action": "close_preview"}
                     messages.append({"role": "user", "content": tool_results})
                     continue
 
