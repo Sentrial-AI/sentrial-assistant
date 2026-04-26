@@ -1520,9 +1520,23 @@ async function api(method, path, body) {
     body: body ? JSON.stringify(body) : undefined,
   });
   if (r.status === 401) {
-    STATE.token = null;
-    localStorage.removeItem(TOKEN_KEY);
-    showSetup('Token rejected. Paste it again.');
+    // DO NOT wipe localStorage here. The previous behavior nuked the token
+    // on ANY 401 — including tangential calls (voice prewarm, push subscribe,
+    // etc.) — forcing the user to re-paste it on every transient mismatch.
+    // Surface the failure so the caller can decide; the setup flow itself
+    // (showSetup → Save) re-validates against /api/state and only then
+    // confirms. The token VALUE stays put so the user doesn't have to dig
+    // it out of Railway again.
+    showSetup('Token rejected by server (' + path + '). It may have been ' +
+              'rotated on Railway — re-paste or click Save to retry the same one.');
+    // Pre-fill the existing token so the user doesn't have to retype it.
+    try {
+      const existing = localStorage.getItem(TOKEN_KEY);
+      if (existing) {
+        const inp = document.getElementById('setup-token');
+        if (inp) inp.value = existing;
+      }
+    } catch {}
     throw new Error('unauthorized');
   }
   return r;

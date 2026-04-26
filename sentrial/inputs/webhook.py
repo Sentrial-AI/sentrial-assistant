@@ -248,6 +248,80 @@ def build_app(
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "error": str(e)[:200]}
 
+    @api.get("/api/voice/diag")
+    async def voice_diag():
+        """No-auth diagnostic endpoint that lets ME (and any operator) check
+        the voice path WITHOUT the Sentrial Bearer token. Returns ONLY
+        sanitized status flags — no key values, no token, no PII. Safe to
+        expose because:
+          - Doesn't return the Deepgram key
+          - Doesn't return the Sentrial Bearer token
+          - Only HTTP status codes + key length / prefix-hash info
+        Used to settle "is the key the problem?" without needing terminal
+        access to the user's keychain or Railway shell."""
+        import sys, httpx, hashlib
+        out: dict = {
+            "deepgram_key_present": False,
+            "deepgram_key_source": None,
+            "deepgram_key_length": 0,
+            "deepgram_key_had_whitespace": False,
+            "deepgram_key_prefix_hash": None,
+            "deepgram_test_status": None,
+            "deepgram_test_error": None,
+            "deepgram_test_body_preview": None,
+            "sentrial_token_present": False,
+            "sentrial_token_source": None,
+            "platform": "linux" if not sys.platform.startswith("darwin") else "darwin",
+            "railway": bool(os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PROJECT_ID")),
+        }
+
+        # Locate Deepgram key (same waterfall as the real endpoint)
+        for source, k in [
+            ("kc:nova3_api_key", kc.get("nova3_api_key")),
+            ("kc:deepgram_api_key", kc.get("deepgram_api_key")),
+            ("env:NOVA3_API_KEY", os.environ.get("NOVA3_API_KEY")),
+            ("env:DEEPGRAM_API_KEY", os.environ.get("DEEPGRAM_API_KEY")),
+        ]:
+            if k:
+                out["deepgram_key_present"] = True
+                out["deepgram_key_source"] = source
+                raw_len = len(k)
+                k_clean = k.strip().strip('"').strip("'")
+                out["deepgram_key_length"] = len(k_clean)
+                out["deepgram_key_had_whitespace"] = (raw_len != len(k_clean))
+                # Hash the prefix (so reload-with-same-key vs different-key is
+                # detectable without exposing the value).
+                out["deepgram_key_prefix_hash"] = hashlib.sha256(
+                    k_clean[:8].encode()
+                ).hexdigest()[:12]
+                # Test it
+                try:
+                    async with httpx.AsyncClient(timeout=8) as client:
+                        r = await client.get(
+                            "https://api.deepgram.com/v1/projects",
+                            headers={"Authorization": f"Token {k_clean}"},
+                        )
+                    out["deepgram_test_status"] = r.status_code
+                    if r.status_code != 200:
+                        out["deepgram_test_body_preview"] = r.text[:240]
+                except Exception as e:  # noqa: BLE001
+                    out["deepgram_test_error"] = str(e)[:200]
+                break
+
+        # Sentrial token presence (don't return value)
+        for source, t in [
+            ("kc:sentrial_token", kc.get("sentrial_token")),
+            ("kc:webhook_shared_secret", kc.get("webhook_shared_secret")),
+            ("env:SENTRIAL_TOKEN", os.environ.get("SENTRIAL_TOKEN")),
+            ("env:WEBHOOK_SHARED_SECRET", os.environ.get("WEBHOOK_SHARED_SECRET")),
+        ]:
+            if t:
+                out["sentrial_token_present"] = True
+                out["sentrial_token_source"] = source
+                break
+
+        return out
+
     @api.get("/api/voice/test_key", dependencies=[Depends(require_auth)])
     async def voice_test_key():
         """Definitive check: does our Deepgram key actually authenticate?
